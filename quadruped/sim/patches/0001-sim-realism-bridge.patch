@@ -1,0 +1,227 @@
+diff --git a/simulate_python/config.py b/simulate_python/config.py
+index 55ed043..4f79123 100644
+--- a/simulate_python/config.py
++++ b/simulate_python/config.py
+@@ -1,9 +1,13 @@
+ ROBOT = "go2" # Robot name, "go2", "b2", "b2w", "h1", "go2w", "g1" 
+ ROBOT_SCENE = "../unitree_robots/" + ROBOT + "/scene.xml" # Robot scene
+ DOMAIN_ID = 1 # Domain id
+-INTERFACE = "lo" # Interface 
++# macOS: 回环接口叫 lo0，Linux 才是 lo。写 "lo" 会让 CycloneDDS 报
++# "does not match an available interface"，和之前 en5 那次是同一类错误。
++# 上真机时改成 "en5" 并把 DOMAIN_ID 改回 0。
++INTERFACE = "lo0" # Interface 
+ 
+-USE_JOYSTICK = 1 # Simulate Unitree WirelessController using a gamepad
++# 没接手柄必须设 0，否则 SetupJoystick 会抛 pygame.error 直接中断。
++USE_JOYSTICK = 0 # Simulate Unitree WirelessController using a gamepad
+ JOYSTICK_TYPE = "xbox" # support "xbox" and "switch" gamepad layout
+ JOYSTICK_DEVICE = 0 # Joystick number
+ 
+@@ -12,3 +16,38 @@ ENABLE_ELASTIC_BAND = False # Virtual spring band, used for lifting h1
+ 
+ SIMULATE_DT = 0.005  # Need to be larger than the runtime of viewer.sync()
+ VIEWER_DT = 0.02  # 50 fps for viewer
++
++# ---- 真机特性开关 ----------------------------------------------------
++# 关掉它就是理想仿真：指令当帧生效、传感器无噪声。真机上跑的代码在理想仿真
++# 里调好了，一上机就抖 —— 因为真机有三样仿真默认没有的东西：力矩晚几毫秒
++# 才到、编码器读数带噪声、力控带宽有限。打开后仿真才和真机对得上，
++# 调出来的参数也才有意义。
++#
++# 每一项都能用环境变量单独关掉做对照（写调试脚本时很有用）：
++#   SIM_REALISM=0    全关，退回理想仿真
++#   SIM_LATENCY=0    只关延迟
++#   SIM_NOISE=0      只关编码器噪声
++#   SIM_BW=0         只关力控带宽
++import os
++
++
++def _envf(key, default):
++    try:
++        return float(os.environ[key])
++    except (KeyError, ValueError):
++        return default
++
++
++REALISM = _envf("SIM_REALISM", 1.0) != 0.0
++
++# 指令到力矩的总延迟（秒）。真机链路：CycloneDDS 收发 + 电机驱动电流环，
++# 实测 3~6 ms。这里按物理步长取整，5 ms 刚好一帧。
++REALISM_LATENCY = _envf("SIM_LATENCY", 0.005)
++# 编码器角度/速度噪声（1σ）。角度是 14 位绝对编码器，很小；速度是差分出来
++# 的，噪声大一个量级 —— kd 乘上去就是高频力矩噪声，真机啸叫主要来自这里。
++REALISM_Q_NOISE = _envf("SIM_Q_NOISE", 0.0015)      # rad
++REALISM_DQ_NOISE = _envf("SIM_DQ_NOISE", 0.15)      # rad/s
++# 力矩指令的跟随带宽（Hz）。Go2 电机驱动器是电流环，标称带宽 1 kHz 以上，
++# 200 Hz 的指令周期根本压不到它 —— 这里给 150 Hz 只是留一点相位滞后，
++# 不是主要瓶颈。别再往低里调：那等于把整条 PD 环降增益，腿会软得不像话。
++REALISM_TAU_BW = _envf("SIM_BW", 150.0)
+diff --git a/simulate_python/unitree_sdk2py_bridge.py b/simulate_python/unitree_sdk2py_bridge.py
+index a9ca97a..a552dc5 100644
+--- a/simulate_python/unitree_sdk2py_bridge.py
++++ b/simulate_python/unitree_sdk2py_bridge.py
+@@ -3,6 +3,8 @@ import numpy as np
+ import pygame
+ import sys
+ import struct
++import math
++from collections import deque
+ 
+ from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelPublisher
+ 
+@@ -46,6 +48,24 @@ class UnitreeSdk2Bridge:
+ 
+         self.joystick = None
+ 
++        # ---- 真机特性（见 config.REALISM）--------------------------------
++        # 理想仿真里 ctrl 当帧生效、传感器没有噪声。真机不是：指令要经过 DDS
++        # 收发和电机电流环才变成力矩，编码器读数带噪声，力控还有一阶带宽。
++        # 不模拟这三样，在仿真里调好的增益一上机就抖，而且查不出为什么。
++        self.realism = bool(getattr(config, "REALISM", False))
++        if self.realism:
++            lat = float(getattr(config, "REALISM_LATENCY", 0.005))
++            # 按物理步长向上取整：延迟不足一帧时也给一帧，否则等于没延迟。
++            self._lat_frames = max(1, int(round(lat / self.dt)))
++            self._cmd_q: deque = deque()
++            bw = float(getattr(config, "REALISM_TAU_BW", 45.0))
++            # 一阶低通系数：alpha = 1 - e^{-2π·f·dt}
++            self._bw_alpha = 1.0 - math.exp(-2.0 * math.pi * bw * self.dt)
++            self._ctrl_f = np.zeros(self.num_motor)
++            self._q_sigma = float(getattr(config, "REALISM_Q_NOISE", 0.0))
++            self._dq_sigma = float(getattr(config, "REALISM_DQ_NOISE", 0.0))
++            self._rng = np.random.default_rng(20261110)   # 固定种子，结果可复现
++
+         # Check sensor
+         for i in range(self.dim_motor_sensor, self.mj_model.nsensor):
+             name = mujoco.mj_id2name(
+@@ -110,27 +130,55 @@ class UnitreeSdk2Bridge:
+ 
+     def LowCmdHandler(self, msg: LowCmd_):
+         if self.mj_data != None:
+-            for i in range(self.num_motor):
+-                self.mj_data.ctrl[i] = (
++            n = self.num_motor
++            sd = self.mj_data.sensordata
++            # 先把这一帧的 PD + 前馈算成目标力矩，和真机电机驱动器做的事一样。
++            raw = np.empty(n)
++            for i in range(n):
++                raw[i] = (
+                     msg.motor_cmd[i].tau
+-                    + msg.motor_cmd[i].kp
+-                    * (msg.motor_cmd[i].q - self.mj_data.sensordata[i])
+-                    + msg.motor_cmd[i].kd
+-                    * (
+-                        msg.motor_cmd[i].dq
+-                        - self.mj_data.sensordata[i + self.num_motor]
+-                    )
++                    + msg.motor_cmd[i].kp * (msg.motor_cmd[i].q - sd[i])
++                    + msg.motor_cmd[i].kd * (msg.motor_cmd[i].dq - sd[i + n])
+                 )
+ 
++            if not self.realism:
++                for i in range(n):
++                    self.mj_data.ctrl[i] = raw[i]
++                return
++
++            # 延迟：真机 lowcmd 到关节出力有几毫秒。队列还没攒满时用最早那帧
++            # （等于照常执行），避免刚上电时发出去的是零力矩、狗直接掉下来。
++            self._cmd_q.append(raw)
++            if len(self._cmd_q) > self._lat_frames:
++                out = self._cmd_q.popleft()
++            else:
++                out = self._cmd_q[0]
++            # 力控带宽：电机电流环跟不上瞬时跳变，是一阶滞后。
++            self._ctrl_f += self._bw_alpha * (out - self._ctrl_f)
++            for i in range(n):
++                self.mj_data.ctrl[i] = self._ctrl_f[i]
++
+     def PublishLowState(self):
+         if self.mj_data != None:
+-            for i in range(self.num_motor):
+-                self.low_state.motor_state[i].q = self.mj_data.sensordata[i]
+-                self.low_state.motor_state[i].dq = self.mj_data.sensordata[
+-                    i + self.num_motor
+-                ]
++            n = self.num_motor
++            if self.realism:
++                # 编码器噪声：角度是绝对编码器，噪声小；速度是差分出来的，
++                # 噪声大一个量级。控制端的 kd 直接乘在它上面，所以这条噪声
++                # 就是真机高频啸叫的来源之一，必须让它出现在环里。
++                nq = self._rng.normal(0.0, self._q_sigma, n) \
++                    if self._q_sigma else np.zeros(n)
++                ndq = self._rng.normal(0.0, self._dq_sigma, n) \
++                    if self._dq_sigma else np.zeros(n)
++            for i in range(n):
++                q = self.mj_data.sensordata[i]
++                dq = self.mj_data.sensordata[i + n]
++                if self.realism:
++                    q += nq[i]
++                    dq += ndq[i]
++                self.low_state.motor_state[i].q = q
++                self.low_state.motor_state[i].dq = dq
+                 self.low_state.motor_state[i].tau_est = self.mj_data.sensordata[
+-                    i + 2 * self.num_motor
++                    i + 2 * n
+                 ]
+ 
+             if self.have_frame_sensor_:
+@@ -158,15 +206,49 @@ class UnitreeSdk2Bridge:
+                     self.dim_motor_sensor + 6
+                 ]
+ 
+-                self.low_state.imu_state.accelerometer[0] = self.mj_data.sensordata[
+-                    self.dim_motor_sensor + 7
+-                ]
+-                self.low_state.imu_state.accelerometer[1] = self.mj_data.sensordata[
+-                    self.dim_motor_sensor + 8
+-                ]
+-                self.low_state.imu_state.accelerometer[2] = self.mj_data.sensordata[
+-                    self.dim_motor_sensor + 9
+-                ]
++                # MuJoCo 的 accelerometer 传感器给的是「世界系、不含重力」的线
++                # 加速度；真机 imu_state.accelerometer 是「机体系、含重力的比力」
++                # —— 静止平放时读数是 (0, 0, +9.81)。两个语义差一个旋转和一个
++                # 重力项。原来直接透传，控制器在仿真里读到静止时是 0、在真机上
++                # 是 9.81，任何依赖加速度的估计（比如打滑时的测速）都没法通用。
++                # 这里按真机语义换算：先补重力得到世界系比力，再转到机体系。
++                _ax = self.mj_data.sensordata[self.dim_motor_sensor + 7]
++                _ay = self.mj_data.sensordata[self.dim_motor_sensor + 8]
++                _az = self.mj_data.sensordata[self.dim_motor_sensor + 9] + 9.81
++                _qw = self.low_state.imu_state.quaternion[0]
++                _qx = self.low_state.imu_state.quaternion[1]
++                _qy = self.low_state.imu_state.quaternion[2]
++                _qz = self.low_state.imu_state.quaternion[3]
++                # Rᵀ · f，Rᵀ 的第 i 行就是 R 的第 i 列
++                self.low_state.imu_state.accelerometer[0] = (
++                    (1 - 2 * (_qy * _qy + _qz * _qz)) * _ax
++                    + 2 * (_qx * _qy + _qw * _qz) * _ay
++                    + 2 * (_qx * _qz - _qw * _qy) * _az)
++                self.low_state.imu_state.accelerometer[1] = (
++                    2 * (_qx * _qy - _qw * _qz) * _ax
++                    + (1 - 2 * (_qx * _qx + _qz * _qz)) * _ay
++                    + 2 * (_qy * _qz + _qw * _qx) * _az)
++                self.low_state.imu_state.accelerometer[2] = (
++                    2 * (_qx * _qz + _qw * _qy) * _ax
++                    + 2 * (_qy * _qz - _qw * _qx) * _ay
++                    + (1 - 2 * (_qx * _qx + _qy * _qy)) * _az)
++
++                # 原版只填了四元数，没填 rpy，订阅方读到的 rpy 恒为 0。
++                # 姿态反馈是平衡控制的前提，这里按 ZYX 顺序从四元数换算，
++                # 语义与真机一致。
++                qw = self.low_state.imu_state.quaternion[0]
++                qx = self.low_state.imu_state.quaternion[1]
++                qy = self.low_state.imu_state.quaternion[2]
++                qz = self.low_state.imu_state.quaternion[3]
++                self.low_state.imu_state.rpy[0] = math.atan2(
++                    2 * (qw * qx + qy * qz), 1 - 2 * (qx * qx + qy * qy)
++                )
++                self.low_state.imu_state.rpy[1] = math.asin(
++                    max(-1.0, min(1.0, 2 * (qw * qy - qz * qx)))
++                )
++                self.low_state.imu_state.rpy[2] = math.atan2(
++                    2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz)
++                )
+ 
+             if self.joystick != None:
+                 pygame.event.get()

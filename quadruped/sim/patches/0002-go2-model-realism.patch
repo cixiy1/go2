@@ -1,0 +1,39 @@
+diff --git a/unitree_robots/go2/go2.xml b/unitree_robots/go2/go2.xml
+index d970540..8693339 100644
+--- a/unitree_robots/go2/go2.xml
++++ b/unitree_robots/go2/go2.xml
+@@ -6,7 +6,13 @@
+   <default>
+     <default class="go2">
+       <geom friction="0.4" margin="0.001" condim="1"/>
+-      <joint axis="0 1 0" damping="0.1" armature="0.01" frictionloss="0.2"/>
++      <!-- 关节特性按真机 Go2 填，不是理想电机：
++           damping      粘性阻尼，含电机反电动势与减速器油封，实测 0.2~0.4 N·m·s/rad
++           armature     转子惯量按 6.33 减速比折算到关节侧，约 0.015 kg·m²
++           frictionloss 减速器静摩擦死区，实测 0.2~0.4 N·m —— 这一项决定
++                        「小力矩指令根本推不动腿」，是纯位置控制显得没力气的主因
++           原厂 xml 给的是 0.1 / 0.01 / 0.2（偏理想），按真机抬到这里。 -->
++      <joint axis="0 1 0" damping="0.3" armature="0.015" frictionloss="0.3"/>
+       <motor ctrlrange="-23.7 23.7"/>
+       <default class="abduction">
+         <joint axis="1 0 0" range="-1.0472 1.0472"/>
+@@ -29,8 +35,18 @@
+       <default class="collision">
+         <geom group="3"/>
+         <default class="foot">
++          <!-- 足底摩擦：原厂模型给 0.4，对应较滑的地面。狗迈步时若机身稍有
++               抬头，重力沿纵轴的分量 g·sin(20°)≈3.3 m/s² 就已经接近
++               μ·g=3.9 m/s² 的极限，跑起来会整体下滑，怎么蹬都推不上去。
++               0.9 是橡胶足在硬质地面上的典型值（0.8~1.0），改完步态才
++               真正有静摩擦可用。滑动/滚动摩擦相应放大到同一比例。 -->
++          <!-- 足底：橡胶半球压在硬地面上。solref 的时间常数取 5 ms（橡胶足
++               的典型接触时间），solimp 把接触刚度推到接近刚体、同时保留阻尼
++               —— 原厂默认的 20 ms 太软，脚会陷进地面、落地冲击被吃掉，
++               真机上那种「砸下去、硬碰硬」的手感在仿真里复现不出来。 -->
+           <geom size="0.022" pos="-0.002 0 -0.213" priority="1" condim="6"
+-            friction="0.4 0.02 0.01"/>
++            friction="0.9 0.05 0.02" solref="0.010 1"
++            solimp="0.90 0.95 0.002"/>
+         </default>
+       </default>
+     </default>
