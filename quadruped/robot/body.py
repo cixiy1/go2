@@ -33,7 +33,7 @@ if __package__ in (None, ""):           # python quadruped/robot/body.py：把�
         os.path.dirname(os.path.abspath(__file__)))))
 
 from quadruped.control.controller import GaitParams, Go2Controller, NOMINAL_HEIGHT
-from quadruped.control.high_level import HighLevelController
+from quadruped.control.high_level.ours import HighLevelController
 
 # 仿真器的配置目录（unitree_mujoco 子模块），用来读它绑的网卡与域号。
 # 位置：quadruped/sim/unitree_mujoco/simulate_python，相对本文件的上一级包根。

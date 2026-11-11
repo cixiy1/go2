@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Go2 高层运行控制器（第 3 层）：只表达意图，不碰 DDS。
+"""自研高层控制器：只表达意图，不碰 DDS。
 
 父对象是 controller.Go2Controller，构造时注入，存放于 self.controller；
 每条动作最后都落到它的 apply_pose / _run_gait / start_velocity 上。
@@ -245,6 +245,10 @@ class HighLevelController:
         self.controller.apply_pose_async(self.controller.stand_joint_target(),
                                          duration=0.28)
         return self.API_OK
+
+    def freeze(self) -> int:
+        """停止：中断当前动作并站定，不阻塞。与官方那份同名同义。"""
+        return self.stand_async()
 
     def stand_async(self) -> int:
         """回到站立并保持，顺便中断正在演的动作。**立即返回**。"""
@@ -835,3 +839,8 @@ class HighLevelController:
     def stop(self) -> None:
         """急停：停回路并给腿下阻尼。之后要动就重新调动作，回路会自己重启。"""
         self.controller.shutdown()
+
+
+# 与 `official.OfficialHighLevel` 对称的写法。类名 HighLevelController 是历史
+# 叫法（那时只有一份），改名字的收益不抵改动面，所以留个别名。
+OursHighLevel = HighLevelController

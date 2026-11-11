@@ -1433,7 +1433,7 @@ class Go2Controller:
         # 控制回路里从不调用它的方法（依赖是单向的：高层 → 控制器）。
         # 延迟导入：go2_high_level 反过来要用本模块的 MIN_HEIGHT / _wrap_pi，
         # 顶层互相 import 会成环，所以放在构造时导入（此时本模块已加载完）。
-        from quadruped.control.high_level import HighLevelController
+        from quadruped.control.high_level.ours import HighLevelController
 
         self.high_level = HighLevelController(self)
 

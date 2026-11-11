@@ -1,16 +1,16 @@
-"""控制端实现：全项目**唯一**接触 DDS 与机器人本体的地方。
+"""控制端实现：把「一个高层控制器 + 一台机器」装配成控制器能用的对象。
 
-两个实现，对控制器暴露同一套方法：
+全项目**唯一**接触 DDS 与机器人本体的地方。两个实现：
 
-    OursBackend      Go2Robot → Go2Controller → HighLevelController，发 rt/lowcmd
-    OfficialBackend  unitree_sdk2py 的 SportClient，调真机上的原生运动服务
+    OursBackend      Go2Robot（本体 + 200 Hz 回路）+ 自研高层，走 rt/lowcmd
+    OfficialBackend  OfficialHighLevel（sport service 客户端），走 rt/api/sport/request
 
-方法名沿用 SportClient 那一套（Init / SetTimeout / BalanceStand / Move /
-StopMove / Damp），因为自研高层本来就是对它的模仿 —— 于是控制器写完一份，
-两个环境都能跑，不用知道自己连的是哪个。
+两者对上层暴露同一套方法 —— 因为两份高层控制器本来就同名同义
+（见 `control/high_level/__init__.py`）。公共部分在 `_Delegate` 里，子类只管
+「怎么建连接」和「状态从哪读」。
 
-上层不该 import 这个文件：用 `robot.connect(endpoint, kind)`，它在需要的时候
-才延迟导入。控制器提前 import 的唯一后果是 `main.py --list` 也要等 SDK 加载。
+上层不该直接 import 这个文件：用 `robot.connect(endpoint, kind)`，它在需要的
+时候才延迟导入。
 """
 
 import socket
@@ -26,11 +26,93 @@ def require_iface(iface: str) -> None:
     raise RuntimeError(f"本机没有网卡 {iface}。当前可用：{avail}")
 
 
-class OursBackend:
+class _Delegate:
+    """把动作转给 `self.client`，转的同时不掺任何判断。
+
+    `client` 是两份高层控制器之一，它们的方法集一致：
+    `Init / SetTimeout / BalanceStand / Move / StopMove`，外加不阻塞版的
+    `jump_async / crouch_async / uncrouch_async / stand_async / stop_async /
+    freeze / park`。所以这里不需要按后端分支 —— 一旦需要，就说明两份的接口
+    又漂了，该去改控制器而不是在这里加 if。
+    """
+
+    kind = ""
+    label = ""
+    target = ""
+    client = None
+
+    def start(self) -> int:
+        """SetTimeout → Init → BalanceStand，返回码非 0 = 对端没响应。"""
+        self.client.SetTimeout(3.0)
+        self.client.Init()
+        return self.client.BalanceStand()
+
+    def jump(self) -> int:
+        """跳跃。排完就返回，不等落地（两份都是非阻塞的）。"""
+        return self.client.jump_async()
+
+    def crouch(self) -> int:
+        return self.client.crouch_async(0.08)
+
+    def uncrouch(self) -> int:
+        return self.client.uncrouch_async()
+
+    def stand(self) -> int:
+        return self.client.stand_async()
+
+    def stop_motion(self) -> int:
+        """停车，不等收步完成 —— 20 Hz 主循环不能在这里睡着。"""
+        return self.client.stop_async()
+
+    def freeze(self) -> int:
+        """停止：中断动作并站定，仍然不阻塞。"""
+        return self.client.freeze()
+
+    def close(self) -> None:
+        """收工。自研那份要蹲下再松（仿真桥不发指令就没力矩），官方停住即可，
+        所以这件事由各自的 `park()` 决定，这里只转发。"""
+        self.client.park()
+
+    @property
+    def loco_gait(self):
+        return self.client.gait_style_label
+
+    def toggle_loco_gait(self):
+        return self.client.toggle_gait_style()
+
+    @property
+    def jump_gait(self):
+        return self.client.jump_style_label
+
+    def toggle_jump_gait(self):
+        return self.client.toggle_jump_style()
+
+    @property
+    def busy(self) -> bool:
+        raise NotImplementedError
+
+    @property
+    def pos(self):
+        raise NotImplementedError
+
+    @property
+    def rpy(self):
+        raise NotImplementedError
+
+    @property
+    def height(self):
+        raise NotImplementedError
+
+    @property
+    def loop_text(self) -> str:
+        return ""
+
+
+class OursBackend(_Delegate):
     """自研：Go2Robot → Go2Controller → HighLevelController。
 
-    高层本身就实现了 SportClient 那一套方法，所以 client 就是它本身，
-    不需要再包一层。位置和姿态取自控制器在 connect 时订阅的 rt/sportmodestate。
+    连接、控制回路、里程计都在 `Go2Robot` 里；这里只是在它上面取出高层那一层，
+    再把状态（位置 / 姿态 / 机身高度 / 回路耗时）转给控制器看。
     """
 
     kind = "ours"
@@ -48,12 +130,6 @@ class OursBackend:
                 f"{c.iface}（domain {c.domain}）3 秒内没收到 rt/lowstate。"
                 "仿真先起 ./quadruped/sim/run_sim.sh；真机先确认 setup_en5.sh 过了")
         self.client = c.high_level
-
-    def start(self) -> int:
-        """SetTimeout → Init → BalanceStand。返回码非 0 说明对端没响应。"""
-        self.client.SetTimeout(3.0)
-        self.client.Init()
-        return self.client.BalanceStand()
 
     @property
     def loop_text(self) -> str:
@@ -81,142 +157,42 @@ class OursBackend:
         """腿正被跳跃 / 蹲伏占着。这时候别再发速度，等动作播完自然接着走。"""
         return self.robot.controller.busy
 
-    def jump(self) -> int:
-        return self.client.jump_async()          # 排完就返回，不等落地
 
-    @property
-    def loco_gait(self) -> str:
-        return self.client.gait_style_label
+class OfficialBackend(_Delegate):
+    """官方：`OfficialHighLevel`，调真机上的原生运动服务。
 
-    def toggle_loco_gait(self) -> str:
-        """机械 ↔ 仿生：跑法跟着换，跳跃动作也一起换（同一档风格）。"""
-        self.client.toggle_jump_style()
-        return self.client.gait_style_label
-
-    @property
-    def jump_gait(self) -> str:
-        return self.client.jump_style_label
-
-    def toggle_jump_gait(self) -> str:
-        """机械 ↔ 仿生：跳跃动作跟着换，跑法也一起换（同一档风格）。"""
-        self.client.toggle_gait_style()
-        return self.client.jump_style_label
-
-    def crouch(self) -> int:
-        return self.client.crouch_async(0.08)
-
-    def uncrouch(self) -> int:
-        return self.client.uncrouch_async()
-
-    def stand(self) -> int:
-        return self.client.stand_async()
-
-    def stop_motion(self) -> int:
-        """停车，不等收步完成 —— 20 Hz 主循环不能在这里睡着。"""
-        return self.client.stop_async()
-
-    def freeze(self) -> int:
-        """停止：中断动作并站定，仍然不阻塞。"""
-        return self.client.stand_async()
-
-    def close(self):
-        """停步 → 蹲下 → 阻尼。仿真桥不发指令就没有力矩，必须自己蹲好再松。"""
-        self.client.park()
-
-
-class OfficialBackend:
-    """官方：unitree_sdk2py 的 SportClient，调真机上的原生运动服务。
-
-    只在真机可用 —— 仿真的桥接层只收发 rt/lowcmd 和 rt/sportmodestate，
-    没有 rt/api/sport/request 的服务端，请求会一直等到超时。
+    只在真机可用 —— 仿真的桥接层只收发 `rt/lowcmd` 和 `rt/sportmodestate`，
+    没有 `rt/api/sport/request` 的服务端，请求会一直等到超时。
     """
 
     kind = "official"
     label = "官方控制器 SportClient"
 
     def __init__(self, endpoint, *, kp=None, kd=None, tau=None):
-        # 增益是自研控制器的参数，官方那份跑在机器上，给了也用不到。
-        from unitree_sdk2py.core.channel import (
-            ChannelFactoryInitialize, ChannelSubscriber)
-        from unitree_sdk2py.go2.sport.sport_client import SportClient
-        from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
+        # 增益是自研控制器的参数；官方那份跑在机器上，给了也用不到。
+        from quadruped.control.high_level.official import OfficialHighLevel
 
         self.endpoint = endpoint
         require_iface(endpoint.iface)
-        ChannelFactoryInitialize(endpoint.domain, endpoint.iface)
-        self._msg = None
+        self.client = OfficialHighLevel(endpoint.iface, endpoint.domain)
         self.target = f"网卡 {endpoint.iface} / domain {endpoint.domain}"
-        ChannelSubscriber("rt/sportmodestate", SportModeState_).Init(
-            lambda m: setattr(self, "_msg", m), 10)
-        self.client = SportClient()
-        self.client.SetTimeout(3.0)
-        self.client.Init()
-
-    def start(self) -> int:
-        """SetTimeout → Init → BalanceStand。官方客户端在构造时已经 Init 过，
-        再 Init 一次无害（就是重设超时与内部状态）。"""
-        self.client.SetTimeout(3.0)
-        self.client.Init()
-        return self.client.BalanceStand()
-
-    @property
-    def loop_text(self) -> str:
-        return ""                            # 原生控制环在机器上，这里看不到
 
     @property
     def pos(self):
-        return tuple(self._msg.position) if self._msg is not None else None
+        return self.client.pos
 
     @property
     def rpy(self):
-        return tuple(self._msg.imu_state.rpy) if self._msg is not None else None
+        return self.client.rpy
 
     @property
     def height(self):
-        return None          # 原生状态里的 position 与 base_link 差一个常数，不做换算
+        return self.client.height
 
     @property
     def busy(self):
-        """原生服务在机器上跑，这些动作都是同步 RPC，这边没有「占着腿」的状态。"""
-        return False
-
-    def jump(self) -> int:
-        return self.client.FrontJump()      # 原生只有前跳，没有原地跳
-
-    @property
-    def loco_gait(self) -> str | None:
-        return None                         # 原生的运动步态在机器上
-
-    def toggle_loco_gait(self) -> str | None:
-        return None
-
-    @property
-    def jump_gait(self) -> str | None:
-        return None                         # 原生步态在机器上，改不了
-
-    def toggle_jump_gait(self) -> str | None:
-        return None
-
-    def crouch(self) -> int:
-        """原生没有「蹲下」这个接口，用坐下代替（后腿折叠，前腿撑地）。"""
-        return self.client.Sit()
-
-    def uncrouch(self) -> int:
-        return self.client.RiseSit()
-
-    def stand(self) -> int:
-        return self.client.BalanceStand()
-
-    def stop_motion(self) -> int:
-        return self.client.StopMove()
-
-    def freeze(self) -> int:
-        self.client.StopMove()
-        return self.client.BalanceStand()
-
-    def close(self):
-        """原生运动服务自己有平衡环，停住就行，不需要 Damp 趴下。"""
-        self.client.StopMove()
+        """原生服务在机器上跑，动作是同步 RPC，这边只有 progress 一个线索。"""
+        return self.client.busy
 
 
 #: 控制端名字 → 实现。`endpoint.preset` 决定能用哪些，见 robot.clients_for。

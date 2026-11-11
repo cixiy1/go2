@@ -46,11 +46,13 @@ main.py                              项目入口：问你要跑哪个控制器
 quadruped/
 ├── control/                        控制算法，除了 DDS 不碰任何 IO
 │   ├── controller.py       3015 行  低层：运动学、IK、步态、力矩、200 Hz 回路
-│   ├── high_level.py        837 行  高层：动作编排，跳跃在这里
+│   ├── high_level/                  高层：把意图翻译成指令，两份可互换
+│   │   ├── ours.py          846 行   自研：排动作序列，落到 200 Hz 回路
+│   │   └── official.py      463 行   官方：调机器上的 sport service（全量）
 │   ├── virtual/                     抽象层：控制器协议 + 机器人对接，不上菜单
 │   │   ├── protocol.py      133 行   ControllerModule / GROUP 校验
 │   │   ├── robot.py         264 行   端点解析、控制端选择、connect() 工厂
-│   │   └── backends.py      226 行   两个控制端实现（唯一 import SDK 的地方）
+│   │   └── backends.py      202 行   两个控制端实现（唯一 import SDK 的地方）
 │   ├── physical/                    物理控制器：直接驱动机器人
 │   │   └── keyboard.py     1018 行  键盘遥控，只调抽象层那四个函数
 │   └── embodied/                    具身智能控制器：决策层，暂时留空
@@ -75,7 +77,7 @@ docs/
 
 分工按"改动频率"切，不按代码行数切。
 
-`control/controller.py` 占了一半体量，因为所有会变的东西都在这里：关节几何、限位、步态参数、反馈增益、DDS 通信。`control/high_level.py` 只描述动作，改一个跳跃节奏不用碰控制回路。`robot/body.py` 三百行，几乎不随算法改动。
+`control/controller.py` 占了一半体量，因为所有会变的东西都在这里：关节几何、限位、步态参数、反馈增益、DDS 通信。`control/high_level/` 只描述动作，改一个跳跃节奏不用碰控制回路；`ours.py` 排我们的序列，`official.py` 调机器上的运控服务，两份同名同义，换的是 `connect()` 里的一个 `kind`。`robot/body.py` 三百行，几乎不随算法改动。
 
 ## 三、三层对象：持有双向，依赖单向
 
@@ -113,7 +115,7 @@ Go2Robot
 ```python
 def __init__(self, ...):
     ...
-    from quadruped.control.high_level import HighLevelController
+    from quadruped.control.high_level.ours import HighLevelController
     self.high_level = HighLevelController(self)
 ```
 
