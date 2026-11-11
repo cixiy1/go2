@@ -242,7 +242,7 @@ def _home_feet():
 def run(mode: str, action: str, vx: float, dur: float, slope: float,
         push_n: float, kp: float | None, style: str, gait_over: dict,
         realism: bool = True, wrench: str = "mpc",
-        burst: bool = False) -> dict:
+        burst: bool = False, vy: float = 0.0) -> dict:
     from quadruped.control.controller import (CTRL_LEGS, SPORT_Z_BIAS,
                                               Go2Controller, make_gait)
 
@@ -331,7 +331,8 @@ def run(mode: str, action: str, vx: float, dur: float, slope: float,
         moving = action != "stand" and t > 0.3
         if moving and c._h_des is None:
             c._h_des = c.body_height()
-        c._vel_target = [vx if moving else 0.0, 0.0, 0.0]
+        c._vel_target = [vx if moving else 0.0,
+                         vy if moving else 0.0, 0.0]
         sim.push(push_n if (action == "push"
                             and 0.55 * dur < t < 0.55 * dur + 0.3) else 0.0)
         if burst:
@@ -363,9 +364,10 @@ def run(mode: str, action: str, vx: float, dur: float, slope: float,
     # burst 模式：不睡、按自己的节奏连跑，量到的才是「一帧算多久」。
     # paced 循环里 `time.sleep` 会让 macOS 把进程降到低 QoS，量出来的耗时
     # 是降频后的（实测同一段 WBC 站姿：paced 3.6 ms、burst 0.6 ms）。
-    res = _metrics(rec, vx, action, dur, burst)
+    res = _metrics(rec, vx, action, dur, burst, vy)
     res["mode"] = mode
     res["action"] = action
+    res["vx"], res["vy"] = vx, vy
     res["loop"] = c.loop_stats()
     res["force"] = c.mpc_stats() if mode == "mpc" else {}
     res["burst"] = burst
@@ -374,7 +376,7 @@ def run(mode: str, action: str, vx: float, dur: float, slope: float,
 
 
 def _metrics(rec: dict, vx: float, action: str, dur: float,
-             burst: bool = False) -> dict:
+             burst: bool = False, vy: float = 0.0) -> dict:
     t = np.array(rec["t"])
     p = np.array(rec["pos"])
     rpy = np.array(rec["rpy"])
@@ -397,8 +399,11 @@ def _metrics(rec: dict, vx: float, action: str, dur: float,
     )
     span = max(1e-6, tw[-1] - tw[0])
     out["v_mean"] = float(math.hypot(out["dx"], out["dy"]) / span)
-    out["slip"] = (float(1.0 - out["dx"] / (vx * span))
-                   if action != "stand" and vx else 0.0)
+    # 打滑率按**指令速度向量**算，不是只看 vx —— 横移时 vx 是 0，只看 vx
+    # 会把「指令 0.2 横向、实际走了 0」算成 0% 打滑。
+    cmd = math.hypot(vx, vy)
+    out["slip"] = (float(1.0 - math.hypot(out["dx"], out["dy"]) / (cmd * span))
+                   if action != "stand" and cmd > 1e-6 else 0.0)
     d = np.abs(np.diff(tau[w], axis=0)).max(axis=1)
     out["dtau_p95"] = float(np.percentile(d, 95))
     out["dtau_max"] = float(d.max()) if d.size else 0.0
@@ -466,9 +471,13 @@ def compare(a: dict, b: dict) -> None:
     print("\n" + "=" * 76)
     print(f"{a['action']}  A/B：{a['mode']} vs {b['mode']}（↓ 表示越小越好）")
     print(f"{'指标':<20}{a['mode']:>12}{b['mode']:>12}   谁小")
+    # 横移测试里 dy 是目标而不是误差，方向和判据都要反过来，否则会显示成
+    # 「走得越多越差」。
+    lateral = abs(a.get("vy", 0.0)) > 1e-6
     rows = [
         ("平均速度 m/s", "v_mean", False, 3),
-        ("横向漂移 m", "dy", True, 3),
+        ("横向位移 m" if lateral else "横向漂移 m", "dy",
+         not lateral, 3),
         ("高度均值 mm", "h_mean", None, 1),
         ("roll 峰峰 °", "roll_pp", True, 1),
         ("pitch 峰峰 °", "pitch_pp", True, 1),
@@ -497,6 +506,8 @@ def main() -> int:
                     choices=("stand", "walk", "push", "slope"))
     ap.add_argument("--style", default="mech", choices=("mech", "bio"))
     ap.add_argument("--vx", type=float, default=0.25)
+    ap.add_argument("--vy", type=float, default=0.0,
+                    help="横移速度，正为左。默认 0 = 只测前进")
     ap.add_argument("--dur", type=float, default=6.0)
     ap.add_argument("--slope", type=float, default=None,
                     help="横坡角度（度），默认按 action 取：slope=5，其余 0")
@@ -521,9 +532,10 @@ def main() -> int:
     modes = ["vmc", "mpc"] if a.ab else [a.mode]
     got = []
     for m in modes:
-        print(f"\n[{m}] {a.action}  slope={slope}°  vx={a.vx}  dur={a.dur}"
+        print(f"\n[{m}] {a.action}  slope={slope}°  vx={a.vx}  vy={a.vy}  dur={a.dur}"
               f"  kp={a.kp or '默认'}  style={a.style}", flush=True)
         r = run(m, a.action, a.vx, a.dur, slope, a.push, a.kp, a.style, over,
+                vy=a.vy,
                 realism=not a.ideal, wrench=a.wrench, burst=a.burst)
         show(r)
         got.append(r)
