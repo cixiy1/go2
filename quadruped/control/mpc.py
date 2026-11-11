@@ -146,6 +146,7 @@ class SRBDMPC:
                  *, mu: float = 0.6, fz_max: float = 220.0,
                  horizon: int = 12, dt: float = 0.02,
                  w_height: float = 4e3, w_v: float = 2e2,
+                 w_vxy: float | None = None,
                  w_rpy: float = 5e2, w_omega: float = 2e1,
                  w_force: float = 5e-4,
                  com_body=None, eps_abs: float = 1e-6, eps_rel: float = 1e-6,
@@ -170,9 +171,17 @@ class SRBDMPC:
                           0.0, 0.0, 0.0,
                           0.0, 0.0, 0.0,
                           0.0, 0.0, 0.0])
-        # 速度三项都要（vz 也管：高度环不该只靠 pz）。
-        self.Q[3, 3] = w_v
-        self.Q[4, 4] = w_v
+        # 速度：**水平与竖直分开给**。z 方向必须闭环（那是高度环的一半，
+        # 只靠 pz 会让机身落地时一路沉下去再弹回来）；x/y 的权重在闭环接线
+        # 时给 0，速度环留在外层步态（`speed_loop` 调步幅）——
+        # 两层同时闭环同一个自由度，结果是互相抢：实测机身被 MPC 推着加速、
+        # 步态又按测量速度收步幅，roll 冲到 51°、横向漂 0.44 m。
+        #
+        # 位置权重是 0 的情况下，x/y 速度权重单独存在是没有意义的（位置会
+        # 积分漂走），所以要么两层都给 0，要么都给。
+        wvx = w_v if w_vxy is None else float(w_vxy)
+        self.Q[3, 3] = wvx
+        self.Q[4, 4] = wvx
         self.Q[5, 5] = w_v * 0.5
         self.Q[6, 6] = w_rpy          # roll
         self.Q[7, 7] = w_rpy          # pitch
@@ -194,6 +203,7 @@ class SRBDMPC:
         self._qp = DenseQP(12 * self.N, self._A.shape[0],
                            eps_abs=eps_abs, eps_rel=eps_rel, polish=polish)
         self.solve_times = []
+        self.iters = []
 
     # --- 建模 -------------------------------------------------------------
 
@@ -212,14 +222,16 @@ class SRBDMPC:
         # 陀螺项 −ω × Iω 对 ω 线性化：−skew(ω)·I·ω → ∂/∂ω = −skew(ω)·I
         A[W, W] = -Ii @ skew(omega) @ I
 
-        Bk = np.zeros((n, 12, 12))          # 每个 knot 一块，12 力 → 12 状态
-        for k in range(n):
-            for i in range(4):
-                Bk[k, V, 3 * i:3 * i + 3] = np.eye(3) / m
-                Bk[k, W, 3 * i:3 * i + 3] = Ii @ skew(feet_rel[i])
+        Bk = np.zeros((12, 12))
+        Bk[V, :] = np.tile(np.eye(3) / m, (1, 4))
+        for i in range(4):
+            Bk[W, 3 * i:3 * i + 3] = Ii @ skew(feet_rel[i])
 
         Ad = np.eye(12) + A * self.dt
-        Bd = Bk * self.dt
+        # 每个 knot 的 B 完全相同（力只跟足端位置有关，一个 horizon 内不变），
+        # 所以 Bd 只是一份 B 复制 n 次。**不要写成按 knot 循环赋值** —— 那是
+        # 96 次 Python 层的切片赋值，实测占了 MPC 一帧 10 ms 里的 1 ms。
+        Bd = np.broadcast_to(Bk * self.dt, (n, 12, 12))
         bd = np.zeros(12)
         bd[5] = -GRAVITY * self.dt
         return Ad, Bd, bd
@@ -238,11 +250,17 @@ class SRBDMPC:
         for k in range(1, n + 1):
             Sx[12 * (k - 1):12 * k] = pw[k]
 
-        # S_f 的块 (k, j) = Ad^(k−1−j)·Bd_j，j < k
+        # S_f 的块 (k, j) = Ad^(k−1−j)·Bd_j，j < k。Bd 在整个 horizon 内相同，
+        # 所以只有 n 种不同的块（Ad^m·Bd，m = 0..n−1），不是 n(n+1)/2 = 78 种。
+        # 逐个算 78 次 12×12 乘法在 Python 层要 1~2 ms，先摊成一个列表再填。
+        G = [Bd[0]]
+        for _ in range(n - 1):
+            G.append(Ad @ G[-1])
         Sf = np.zeros((12 * n, 12 * n))
-        for k in range(1, n + 1):
-            for j in range(k):
-                Sf[12 * (k - 1):12 * k, 12 * j:12 * (j + 1)] = pw[k - 1 - j] @ Bd[j]
+        for m in range(n):
+            blk = G[m]
+            for k in range(m + 1, n + 1):
+                Sf[12 * (k - 1):12 * k, 12 * (k - 1 - m):12 * (k - m)] = blk
 
         # 常数项：重力那一段也要传下去，Sx·x0 之外单独算
         bias = np.zeros(12 * n)
@@ -332,13 +350,17 @@ class SRBDMPC:
     # 解一次。`feet_body` 是四只脚在机体系的位置（{腿名: (3,)}），`contacts`
     # 是 (N, 4) 的布尔表，顺序按 LEGS。
     #
+    # `yaw_ref` 是**参考航向**，不是实测航向。不给就取实测值 —— 那样 `yaw` 那一
+    # 维的误差恒为 0，只剩 ωz 被阻尼到 0，机身想转到哪就转到哪，等于没有航向
+    # 保持。闭合回路里必须由上层给一个「起步时锁住、之后按指令积分」的角度。
+    #
     # 返回的力是**世界系**：地面反力的方向不随机身转，机身在滚转时这一点尤其
     # 重要，用机体系的力去积分会把机身越滚越歪。
     def solve(self, state: SRBDState, ref: SRBDRef, feet_body: dict,
-              contacts, yaw: float | None = None) -> MPCSolution:
+              contacts, yaw_ref: float | None = None) -> MPCSolution:
         t0 = time.perf_counter()
         R = state.R
-        yaw = float(state.rpy[2]) if yaw is None else float(yaw)
+        yaw = float(state.rpy[2]) if yaw_ref is None else float(yaw_ref)
 
         # 足端相对质心（世界系）
         feet_rel = np.zeros((4, 3))
@@ -363,6 +385,9 @@ class SRBDMPC:
         self.solve_times.append(time.perf_counter() - t0)
         if len(self.solve_times) > 200:
             self.solve_times.pop(0)
+        self.iters.append(int(info.get("iter", 0)))
+        if len(self.iters) > 200:
+            self.iters.pop(0)
 
         f = x.reshape(self.N, 4, 3)
         if not np.isfinite(f).all():
@@ -385,10 +410,13 @@ class SRBDMPC:
             return dict(n=0, mean=0.0, p95=0.0, max=0.0)
         d = sorted(self.solve_times)
         n = len(d)
+        it = sorted(self.iters) if self.iters else [0]
         return dict(n=n,
                     mean=1e3 * sum(d) / n,
                     p95=1e3 * d[min(n - 1, int(n * 0.95))],
-                    max=1e3 * d[-1])
+                    max=1e3 * d[-1],
+                    it_mean=sum(it) / len(it),
+                    it_p95=it[min(len(it) - 1, int(len(it) * 0.95))])
 
 
 # ---------------------------------------------------------------------------
