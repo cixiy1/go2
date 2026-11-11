@@ -273,9 +273,17 @@ def _pick(title: str, rows: list[tuple], default: int = 0) -> str:
         print(f"  「{raw}」不是编号")
 
 
-# 能改的通用项。**控制器自己的参数不在这里** —— 键盘的速度上限、按键方案、
-# 行模式这些只有键盘控制器认识，搬到这层就等于替每个控制器维护一份 argparse，
-# 加一个控制器要回来改一次。它们在控制器自己启动时问。
+# 能改的通用项。
+#
+# **kp / kd 不在这里**，虽然所有控制器都认这两个参数。它们是跟模型一起标定
+# 出来的量（`KP_REAL` / `KD_REAL`，仿真与真机同一套，见 `Go2Robot.__init__`
+# 那段注释），随手改一条，仿真里调好的步态和真机就不是一回事了，而且改完
+# 症状是「某个速度段开始打滑」，很难联想到刚度。要临时试，走 `--` 透传：
+#     uv run python main.py keyboard -- --kp 40
+#
+# 控制器自己的参数（键盘的 `--max-speed` / `--keys` / `--line-mode`，
+# `main.py` 的 `--height`）同理不进这张表 —— 搬进来就等于替每个控制器维护
+# 一份 argparse，加一个控制器要回来改一次。它们在控制器自己启动时问。
 CLIENTS = [
     ("__none__", "默认", "由控制端自己挑"),
     ("ours", "自研", "本仓库的 HighLevelController"),
@@ -283,8 +291,7 @@ CLIENTS = [
 ]
 
 SETTING_LABELS = [
-    ("环境", "env"), ("运控", "motion"), ("刚度 kp", "kp"),
-    ("阻尼 kd", "kd"), ("控制端", "client"),
+    ("环境", "env"), ("运控", "motion"), ("控制端", "client"),
 ]
 
 
@@ -299,12 +306,12 @@ def _fmt_setting(cfg: dict, key: str) -> str:
     return "默认" if v is None else str(v)
 
 
-# 一屏列出所有能设的项，输编号改某一项，回车就按这套跑。
+# 一屏列出能设的项，输编号改某一项，回车就按这套跑。
 #
-# 不做成"逐项都问一遍"：五个问题连着问，全默认也要敲五次回车。这里是先给
-# 一屏现状，改哪个说哪个。
+# 不做成"逐项都问一遍"：连着问，全默认也要敲好几次回车。这里是先给一屏现状，
+# 改哪个说哪个。
 def ask_settings() -> dict:
-    cfg = dict(env="sim-new", motion="vmc", kp=None, kd=None, client="__none__")
+    cfg = dict(env="sim-new", motion="vmc", client="__none__")
     while True:
         print("\n当前配置（回车 = 按这套跑，输编号改）")
         for i, (label, key) in enumerate(SETTING_LABELS, 1):
@@ -324,21 +331,8 @@ def ask_settings() -> dict:
             cfg["env"] = _pick("环境", ENVS)
         elif key == "motion":
             cfg["motion"] = _pick("运控", MOTIONS)
-        elif key == "client":
-            cfg["client"] = _pick("控制端", CLIENTS)
         else:
-            try:
-                v = input(f"  {key}（数字，回车 = 默认）：").strip()
-            except EOFError:
-                print()
-                continue
-            if not v:
-                cfg[key] = None
-                continue
-            try:
-                cfg[key] = float(v)
-            except ValueError:
-                print(f"  「{v}」不是数字")
+            cfg["client"] = _pick("控制端", CLIENTS)
 
 
 # 起 MuJoCo 仿真器。路径与 mjpython 的判断都在脚本里，这里只管把终端换过去。
@@ -443,9 +437,6 @@ def launch(entries: list[Entry], extra: list[str], cfg: dict,
     base: list[str] = []
     if preset == "sim":
         base += ["--preset", "sim"]
-    for key in ("kp", "kd"):
-        if cfg.get(key) is not None:
-            base += [f"--{key}", f"{cfg[key]:g}"]
     if cfg.get("client") and cfg["client"] != "__none__":
         base += ["--client", cfg["client"]]
     cmd_extra = base + extra          # 用户在 `--` 后给的排最后，才能覆盖
@@ -539,8 +530,7 @@ def main(argv=None) -> int:
     if args.controllers:
         # 直接点名：不再问，缺的用默认（仿真 / VMC）。
         cfg = dict(env="real" if args.preset == "real" else "sim",
-                   motion=args.motion or "vmc", kp=None, kd=None,
-                   client="__none__")
+                   motion=args.motion or "vmc", client="__none__")
         by_stem = {e.stem: e for e in entries}
         picked = []
         for name in args.controllers:
@@ -558,8 +548,7 @@ def main(argv=None) -> int:
             cfg = ask_settings()
         else:
             cfg = dict(env="real" if args.preset == "real" else "sim",
-                       motion=args.motion or "vmc", kp=None, kd=None,
-                       client="__none__")
+                       motion=args.motion or "vmc", client="__none__")
         picked = ask(groups, entries)
 
     if args.with_sim:
