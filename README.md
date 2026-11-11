@@ -6,7 +6,7 @@
 
 ## 跑起来
 
-macOS，Python 3.10（`pyproject.toml` 里锁的是 `>=3.10,<3.11`）。
+主开发环境是 macOS + Python 3.10（`pyproject.toml` 锁 `>=3.10,<3.11`）。Linux 与 Windows 要动的地方见下面「其他平台」。
 
 ```sh
 uv sync --group sim
@@ -147,6 +147,50 @@ uv run python test/sim_check.py --action stand --burst --dur 4              # �
 `--ab` 同一进程里交替跑 vmc 与 mpc 并列表对比。`--burst` 不按墙钟节拍，只量每帧计算耗时 —— macOS 上 `sleep` 会把进程降到低 QoS，paced 循环里量到的是降频后的数字，不能用来判算力。
 
 其余脚本：`gait_speed.py` 测某个步态实际跑多快，`grid_truth.py` 在真链路上扫参数网格，`real_diag.py` 把真机抖动拆成可对照的数，`dds_probe.py` / `dds_peer.py` 绕过组播做单播探测。
+
+## 其他平台
+
+控制器本身（200 Hz 回路、MPC、WBC、DDS）是纯 Python + numpy + osqp，换系统不用动。不跨平台的是外面三块壳：起仿真窗口、键盘监听、网卡枚举。行号对应当前版本。
+
+### Linux
+
+`quadruped/sim/run_sim.sh` 两处：
+
+- 第 28 行的检查、第 42 行的 `exec` 用的是 `mjpython`。换成 venv 里的 `python` —— `mjpython` 只是 macOS 的 GUI 主线程外壳，Linux 上 `mujoco.viewer` 直接跑没问题。
+- 第 38 行 `sed -i '' "s/^ROBOT = ..."` 去掉空串参数，GNU sed 的 `-i` 不接受后缀。
+
+`Go2Robot.list_ifaces()`（`quadruped/robot/body.py:111`）调 `ifconfig -a`。Linux 默认不装 net-tools，`list_ifaces()` 返回空表，`_interfaces()` 就只剩 lo0 和 en5 占位。两条路：`apt install net-tools`，或者把那段换成 `ip -o addr`。另外 Linux 的 `ifconfig` 没有 `status:` 行，解析出的 `active` 恒为 False —— 有 IP 的网卡照常列出，只有「up 但没地址」的不显示。
+
+`setup_en5.sh` 整段是 macOS 的（`networksetup`、USB 网卡服务名 `AX88179B`）。Linux 换成：
+
+```sh
+sudo ip link set enp0s20u1 up
+sudo ip addr add 192.168.123.222/24 dev enp0s20u1
+```
+
+键盘：X11 下 `--keys global`（pynput）正常。Wayland 会话拿不到全局按键，加 `--keys terminal` 走终端模式。
+
+### Windows
+
+主要障碍在 `quadruped/control/physical/keyboard.py`，三处：
+
+- 第 74、77 行的 `import termios` / `import tty` 在**模块顶层**，Windows 上 import 阶段就崩，不是运行到才崩。用 `if os.name == "posix":` 包起来。
+- 第 171 行的 `os.open("/dev/tty", ...)` 和后面的 `tty.setcbreak()`：`--keys terminal` 这条路径没有对应物，要换 `msvcrt.kbhit()` / `getwch()`。
+- `--keys global` 用的 pynput 在 Windows 上是好的。所以最省事的改法：条件导入 + Windows 上强制 `--keys global`，终端模式不实现。
+
+`run_sim.sh` 是 zsh 脚本，Windows 跑不了。到 `quadruped/sim/unitree_mujoco/simulate_python/` 下直接 `python unitree_mujoco.py` —— Windows 不要求 GUI 跑在主线程，不需要 mjpython。
+
+`quadruped/cli/launcher.py` 的 `os.execv`（第 323、444 行）：Windows 上语义是「起一个新进程再退出」，环境和信号都传不全。`run_sim()` 那条改成 `subprocess.run([sys.executable, ...])`。
+
+`list_ifaces()` 同样失效（没有 `ifconfig`），换 `ipconfig` 或 `psutil.net_if_addrs()`。
+
+`time.sleep` 的精度在 Windows 上是 15.6 ms，和 5 ms 的控制周期不兼容。`test/sim_check.py` 的 `_pace` 要改成「睡到还差 2 ms + 自旋」。`--burst` 不睡，不受影响。
+
+虚拟环境是 `.venv/Scripts/`，不是 `.venv/bin/`。
+
+### 建议
+
+只跑控制器、不需要仿真窗口的话 Linux 最省 —— `run_sim.sh` 两行，键盘不用动。Windows 的工作量集中在 `keyboard.py`，那三处不改，`import` 就过不去。
 
 ## 已知问题
 
