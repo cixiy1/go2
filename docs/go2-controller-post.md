@@ -47,15 +47,16 @@ quadruped/
 ├── control/                        控制算法，除了 DDS 不碰任何 IO
 │   ├── controller.py       3015 行  低层：运动学、IK、步态、力矩、200 Hz 回路
 │   ├── high_level.py        837 行  高层：动作编排，跳跃在这里
-│   ├── virtual/                     虚拟控制器：对仿真器（lo0）
+│   ├── virtual/                     抽象层：控制器协议与 META 校验，不上菜单
+│   │   └── protocol.py               ControllerModule + normalize_meta
+│   ├── physical/                    物理控制器：直接驱动机器人
 │   │   └── keyboard.py              键盘遥控，两个后端
-│   ├── physical/                    物理控制器：对真机（en5），暂时留空
 │   └── embodied/                    具身智能控制器：决策层，暂时留空
 ├── robot/
 │   └── body.py              314 行  本体层，唯一对外入口
 ├── cli/
 │   ├── main.py              236 行  命令行入口（stand / trot / act …）
-│   └── launcher.py          286 行  控制器菜单与进程管理
+│   └── launcher.py          284 行  控制器菜单与进程管理
 └── sim/                             仿真资产（不是 Python 包）
     ├── run_sim.sh                   mjpython 外壳
     └── unitree_mujoco/              官方仿真器（子模块，未改动）
@@ -155,7 +156,7 @@ st = self.robot.controller.loop_stats()
 
 ## 五、两个后端，同一个形状
 
-`control/virtual/keyboard.py` 里有两个控制端，对上层暴露的属性完全一样：
+`control/physical/keyboard.py` 里有两个控制端，对上层暴露的属性完全一样：
 
 ```python
 class OursBackend:

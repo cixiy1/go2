@@ -1,16 +1,14 @@
 """项目入口的启动器：先问你要跑哪个控制器，再把它拉起来。
 
-控制器按分组放在 `quadruped/control/` 下的三个目录里：
+控制器按分组放在 `quadruped/control/` 下：
 
-    virtual/     虚拟 · 对仿真器（lo0）
-    physical/    物理 · 对真机（en5）
-    embodied/    具身智能 · 决策层，输出动作而不是关节指令
+    virtual/     抽象层 —— 只放协议与校验，**不上菜单**（它没有能跑的东西）
+    physical/    物理控制器：直接驱动机器人（键盘、手柄、固定动作脚本）
+    embodied/    具身智能：决策层，输出动作而不是关节指令
 
-前两组按**运行环境**分，第三组按**分层**分：具身智能控制器坐在高层之上，
-自己不碰 DDS 也不碰步态，仿真和真机用的是同一份。
-
-每个模块在模块级暴露一个 `META` 字典，本文件扫描目录、导入读 `META`、列成
-菜单。所以**加一个控制器就是加一个文件**，不用回来改这里。
+形状由 `control/virtual/protocol.py` 定义：模块级 `META` + `main(argv)`。
+本文件扫描后两个目录、导入读 `META`、按协议校验、列成菜单。所以**加一个
+控制器就是加一个文件**，不用回来改这里。
 
 为什么要开子进程而不是 import 进来直接跑：`ChannelFactoryInitialize` 一个
 进程只能调一次，第二个控制器在同一进程里初始化 DDS 会静默拿不到数据。多选
@@ -30,14 +28,15 @@ import subprocess
 import sys
 import unicodedata
 
+from quadruped.control.virtual.protocol import check_module
+
 _HERE = os.path.dirname(os.path.abspath(__file__))          # quadruped/cli
 ROOT = os.path.dirname(os.path.dirname(_HERE))              # 项目根
 CONTROL_DIR = os.path.join(os.path.dirname(_HERE), "control")
 
-# 目录名 → 菜单标题。顺序就是菜单顺序。
+# 目录名 → 菜单标题。顺序就是菜单顺序。`virtual/` 不在里面：它是抽象层。
 GROUPS = (
-    ("virtual", "虚拟 · 仿真器 lo0"),
-    ("physical", "物理 · 真机 en5"),
+    ("physical", "物理控制器 · 直接驱动机器人（仿真或真机）"),
     ("embodied", "具身智能 · 决策层（仿真/真机通用）"),
 )
 
@@ -83,7 +82,7 @@ class Entry:
 
 
 def discover() -> list[Entry]:
-    """扫三个目录，导入每个模块读 META。"""
+    """扫菜单里的那几个目录，导入每个模块，按协议校验 META。"""
     found: list[Entry] = []
     for group, _ in GROUPS:
         d = os.path.join(CONTROL_DIR, group)
@@ -100,11 +99,10 @@ def discover() -> list[Entry]:
                 found.append(Entry(group, stem, module,
                                    error=f"{type(e).__name__}: {e}"))
                 continue
-            meta = getattr(mod, "META", None)
-            if meta is None:
-                # 没有 META 的模块不当控制器，静默跳过（比如辅助模块）。
-                continue
-            found.append(Entry(group, stem, module, meta=dict(meta)))
+            meta, err = check_module(mod, group, stem)
+            if meta is None and err is None:
+                continue                              # 没有 META 的不是控制器，静默跳过
+            found.append(Entry(group, stem, module, meta=meta, error=err))
     return found
 
 
@@ -136,7 +134,7 @@ def ask(entries: list[Entry]) -> list[Entry]:
     """问一句选哪个。回车 = 第一个能跑的。"""
     index = render_menu(entries)
     if not index:
-        print("两个目录下都没有控制器。")
+        print("目录里没有控制器。")
         return []
     default = next((k for k, e in index.items() if e.runnable), None)
     hint = f"回车 = {default}" if default else "没有可用的"

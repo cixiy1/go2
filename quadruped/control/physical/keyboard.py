@@ -1,7 +1,7 @@
-"""虚拟控制器 · 键盘遥控 Go2，带加速度限幅和按键保持。
+"""物理控制器 · 键盘遥控 Go2，带加速度限幅和按键保持。
 
-「虚拟」指它跑在仿真器上（`lo0`）。同一份代码也能驱动真机，那是环境切换
-不是另一个控制器 —— 真机专有的诊断/只读工具放 `quadruped/control/physical/`。
+放在 `physical/` 是因为它**直接驱动机器人**：占键盘、发 `rt/lowcmd`。仿真是
+换块网卡的事（`lo0`），不是另一个控制器。
 
 两个控制端，对外开放的接口完全一样（都是 SportClient 那套 Init / SetTimeout /
 BalanceStand / Move / StopMove / Damp）：
@@ -24,15 +24,15 @@ BalanceStand / Move / StopMove / Damp）：
     uv run python main.py                          # 问用哪个控制器，再问网口
     uv run python main.py keyboard -- --iface en5  # 跳过选择，直接真机
 直接跑这个模块也行：
-    uv run python -m quadruped.control.virtual.keyboard              # 问网口、问控制器
-    uv run python -m quadruped.control.virtual.keyboard --iface en5  # 不问网口，真机
-    uv run python -m quadruped.control.virtual.keyboard --iface en5 --client ours
-    uv run python -m quadruped.control.virtual.keyboard --max-speed 0.25
-    uv run python -m quadruped.control.virtual.keyboard --duration 15  # 最多跑 15 秒
-    uv run python -m quadruped.control.virtual.keyboard --keys terminal  # 强制终端按键
-    uv run python -m quadruped.control.virtual.keyboard --keys-anywhere  # 全局监听
-    uv run python -m quadruped.control.virtual.keyboard --line-mode   # 指令模式
-    uv run python -m quadruped.control.virtual.keyboard --dry-run     # 不连狗
+    uv run python -m quadruped.control.physical.keyboard              # 问网口、问控制器
+    uv run python -m quadruped.control.physical.keyboard --iface en5  # 不问网口，真机
+    uv run python -m quadruped.control.physical.keyboard --iface en5 --client ours
+    uv run python -m quadruped.control.physical.keyboard --max-speed 0.25
+    uv run python -m quadruped.control.physical.keyboard --duration 15  # 最多跑 15 秒
+    uv run python -m quadruped.control.physical.keyboard --keys terminal  # 强制终端按键
+    uv run python -m quadruped.control.physical.keyboard --keys-anywhere  # 全局监听
+    uv run python -m quadruped.control.physical.keyboard --line-mode   # 指令模式
+    uv run python -m quadruped.control.physical.keyboard --dry-run     # 不连狗
 
 不带 --iface / --preset 时先列本机网卡让你选（回车 = 仿真），选完再按那个
 环境列出可选的控制端。非交互终端（管道、重定向）两项都直接用默认。
@@ -74,9 +74,9 @@ import threading
 import time
 import tty
 
-# 项目根进 sys.path：直接 `python quadruped/control/virtual/keyboard.py` 也能跑，
+# 项目根进 sys.path：直接 `python quadruped/control/physical/keyboard.py` 也能跑，
 # 也让 IDE 能静态解析下面的 from quadruped.robot.body。
-# 本文件在 quadruped/control/virtual/ 下，往上三级才是项目根。
+# 本文件在 quadruped/control/physical/ 下，往上三级才是项目根。
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -88,14 +88,14 @@ from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
 from quadruped.robot.body import Go2Robot
 
 # ---- 入口注册信息 ---------------------------------------------------------
-# 项目根 main.py 的启动器会扫 quadruped/control/{virtual,physical,embodied}/*.py，
+# 项目根 main.py 的启动器会扫 quadruped/control/{physical,embodied}/*.py，
 # 导入模块读这个字典来列菜单。加一个新控制器 = 加一个带 META 的文件。
 #   group      所在目录名，菜单按它分组
 #   owns_cmd   最终会让狗动（多个同时选会互相覆盖，启动器会拦）
 #   owns_keys  接管键盘（两个同时选抢按键，启动器也会拦）
 META = dict(
     title="键盘遥控",
-    group="virtual",
+    group="physical",
     desc="w/a/s/d/q/e 边走边转，空格跳跃、Ctrl 蹲起，1~9 调速度档",
     owns_cmd=True,
     owns_keys=True,
