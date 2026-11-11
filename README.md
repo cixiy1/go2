@@ -158,11 +158,17 @@ uv run python test/sim_check.py --action stand --burst --dur 4              # �
 
 ## 第三方代码
 
+根目录的 MIT 只覆盖本仓库自己写的代码。`unitree_sdk2_python/` 是 BSD 3-Clause（Copyright 2016-2024 Unitree Robotics），许可条款见它自己的 `LICENSE`，不受根许可覆盖。
+
 **`unitree_sdk2_python/` 在仓库里**（上游 `unitreerobotics/unitree_sdk2_python` @ `814556d`）。原因是 `utils/thread.py` 上有 macOS 补丁：`timerfd` 是 Linux 专有接口，原实现在 import 阶段就失败，`unitree_mujoco` 的桥起不来。不带这份补丁，clone 下来在 macOS 上跑不了。
 
 **`quadruped/sim/unitree_mujoco/` 不在仓库里。** 它有本地改动（桥的 5 ms 延迟队列、150 Hz 一阶滞后、编码器噪声；`config.py` 的 `lo0` 与关手柄；`go2.xml` 的关节阻尼与足底摩擦），改动导出成 patch 存在 `quadruped/sim/patches/`，重新 clone 后 `git apply` 两条命令还原。步骤见那个目录的 README。
 
 `Yuki/` 与本项目无关，忽略。
+
+## 许可
+
+MIT，见 `LICENSE`。第三方部分的例外见上一节。
 
 ## 相关文档
 
