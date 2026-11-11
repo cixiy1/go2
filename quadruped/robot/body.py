@@ -217,10 +217,27 @@ class Go2Robot:
             height=height, kp=kp, kd=kd, kp_calf=kp_calf, gait=gait,
             real=real_params, tau_ff=tau_ff)
 
+        # MPC / WBC 在这里就建好，不等第一次行走。
+        #
+        # 两个理由：
+        #   1. 构造要编译两份 QP，实测百毫秒级。放在 200 Hz 回路里就是几十帧
+        #      超时，放在 `start_velocity` 里就是起步卡一下。
+        #   2. 它们是常设部件，属于机器人本身，不该跟着步态起停。
+        #
+        # 只在 mpc 力路下建：vmc 一辈子用不到它们，而 MPC 线程常驻会抢主回路
+        # 的 CPU —— 实测回路周期 p95 从 5.7 ms 涨到 9.5 ms。
+        if self.controller.gait.mode == "mpc":
+            self.controller._ensure_mpc()
+
     # -- 连接与状态 ----------------------------------------------------
 
     def connect(self, timeout: float = 3.0) -> bool:
-        return self.controller.connect(timeout)
+        ok = self.controller.connect(timeout)
+        # 连上才起 MPC 线程：`_mpc_solve_once` 要读 q / rpy / 机身高度，没收到
+        # lowstate 之前这些全是 None，解出来是垃圾。
+        if ok and self.controller.gait.mode == "mpc":
+            self.controller._mpc_start()
+        return ok
 
     # 收工。park=True 先蹲下再阻尼，避免从站立高度直接掉下来。
     def shutdown(self, park: bool = True) -> None:

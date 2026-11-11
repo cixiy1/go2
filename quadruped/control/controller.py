@@ -1823,11 +1823,14 @@ class Go2Controller:
         self._step_odom()
         self._update_kin_height()
         mode = self._mode
-        # 一离开步态就把 MPC 线程停掉。放在这里而不是 `hold()` 里：收步是从
-        # `_gait_tick` / `_vel_tick` 里直接切 `_mode` 的，根本不会走 `hold()`，
-        # 线程留着就会一直按最后一份参考解力，虽然没人用，但白烧 25% 的 CPU。
-        if mode != "gait" and self._mpc_th is not None:
-            self._mpc_stop_thread()
+        # 这里**不停** MPC 线程。线程跟着 `Go2Robot` 的 connect / shutdown 走，
+        # 不跟步态走：MPC 是常设部件，收步时停掉、再起步时重启，等于每次切换
+        # 都赌一次线程重新同步。
+        #
+        # 代价是站姿期间它还在解一份没人用的计划（`_mpc_stand_publish` 用的是
+        # 固定 wrench，不读 plan），白烧一份 CPU。这是有意的：宁可多算，也不要
+        # 在 hold↔gait 的边界上出现「线程刚起、计划还是旧的那份」。旧计划交给
+        # `MPC_STALE` 拦，不会真被拿去用。
         if mode in ("hold", "pose"):
             # 站着不动、或者摆姿态，四条腿都是踩实的，权重一律 1。**必须每帧
             # 重置**：步态中途收步时，最后一帧可能有一条腿正处在摆动相（权重
@@ -2029,8 +2032,22 @@ class Go2Controller:
                        stance_foot=self.WBC_STANCE_FOOT,
                        w_slew=self.WBC_W_SLEW)
 
-    # 启停 MPC 线程。stop 不阻塞：worker 最多 5 ms 就自己退出，在 200 Hz
-    # 回路里 join 等于把这一帧的力矩拖后 1 秒。
+    # 丢掉手上那份 MPC 计划。起步时调。
+    #
+    # 线程现在常驻（跟着 `Go2Robot.connect` / `shutdown`，不跟步态），所以进
+    # gait 的那一刻 `_mpc_plan` 里躺着的是**上一段**的解：站姿时它是「原地不动的
+    # 零速参考」，接着上一段走时它是旧的 vx。不清掉，`_mpc_feet_publish` 一进
+    # gait 就照旧参考出力，实测起步被推着往旧方向走 —— walk 平均速度从 0.194
+    # 掉到 0.146。
+    #
+    # 清掉之后 `age > MPC_STALE` 会先退化几帧到 `_tau_ff`，等新计划落下来再接上。
+    # 那几帧是干净的，比拿一份语义不对的计划强。
+    def _mpc_flush_plan(self):
+        with self._mpc_lock:
+            self._mpc_plan = None
+
+    # 起 MPC 线程。幂等：已经活着就直接返回。正常路径由 `Go2Robot.connect()`
+    # 调一次，`_mpc_feet_publish` 里那次是兜底（vmc 起步、中途切到 mpc）。
     def _mpc_start(self):
         self._ensure_mpc()
         if self._mpc_th is not None and self._mpc_th.is_alive():
@@ -2041,9 +2058,20 @@ class Go2Controller:
                                         name="go2-mpc", daemon=True)
         self._mpc_th.start()
 
+    # 停 MPC 线程。**必须 join**：不 join 的话旧线程可能正卡在 `_mpc_solve_once`
+    # 里（4.8 ms），而这里已经把 `_mpc_th` 清空，下一次 `_mpc_start` 就会再起
+    # 一个 —— 两个线程同时调同一个 `SRBDMPC`，warm start 与迭代计数互相踩，
+    # 而且不报任何错。
+    #
+    # 只在 connect 失败与收工时走，最多等一轮（`_mpc_worker` 里 sleep 上限
+    # 20 ms），不在 200 Hz 回路里调用。
     def _mpc_stop_thread(self):
-        if self._mpc_stop is not None:
-            self._mpc_stop.set()
+        th, ev = self._mpc_th, self._mpc_stop
+        if ev is not None:
+            ev.set()
+        if (th is not None and th.is_alive()
+                and th is not threading.current_thread()):
+            th.join(timeout=0.2)
         self._mpc_stop = None
         self._mpc_th = None
         with self._mpc_lock:
@@ -2692,7 +2720,10 @@ class Go2Controller:
         style = _GAIT_ALIASES.get(style, style)
         if style not in self.GAIT_STYLES:
             raise ValueError(f"没有这种运动步态：{style}，只有 {self.GAIT_STYLES}")
-        self.gait = make_gait(style, self.height, self.real)
+        # 力路跟着走。**不能靠默认值**：`make_gait` 的 mode 默认是 vmc，切一次
+        # 档就把 mpc 静默换成 vmc，而 MPC 线程还在跑、白烧 CPU，力矩却是 vmc
+        # 算的，从任何指标上都看不出发生了什么。
+        self.gait = make_gait(style, self.height, self.real, self.gait.mode)
         self.gait_style = style
         # 反馈滤波状态跟着步态一起清：上一套步态跑出来的俯仰/速度残值，喂给
         # 新步态的第一个周期就是一脚踩偏，切完要顿一下甚至打滑。
@@ -2731,6 +2762,7 @@ class Go2Controller:
         self._gait = g
         self.peak_z = 0.0
         self._mpc_yaw = None
+        self._mpc_flush_plan()
         self._t0 = g["t0"]
         self._ensure_loop()
         self._mode = "gait"
@@ -3187,6 +3219,7 @@ class Go2Controller:
         self._pit_filt = self._rol_filt = self._v_filt = 0.0
         # 参考航向重新锁：上一段跑的残留值会让第一帧就要把机身掰回去。
         self._mpc_yaw = None
+        self._mpc_flush_plan()
         self._gait = dict(stream=True, ramp=ramp, gait_ramp=gait_ramp,
                           stop_ramp=0.45, t0=time.time(), last_t=0.0,
                           q_init=self.q.copy(), q_stand=q_stand,
