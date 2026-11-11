@@ -36,6 +36,9 @@ META_KEYS = ("title", "desc", "group", "owns_cmd", "owns_keys")
 #: 必填字段。`title` 缺了菜单里没法显示，直接算错。
 REQUIRED_KEYS = ("title",)
 
+#: 分组元数据认得的字段。
+GROUP_KEYS = ("title", "order")
+
 
 @runtime_checkable
 class ControllerModule(Protocol):
@@ -45,6 +48,40 @@ class ControllerModule(Protocol):
 
     def main(self, argv: list[str] | None = None) -> int:
         ...
+
+
+@runtime_checkable
+class ControllerGroup(Protocol):
+    """分组包的形状：`quadruped/control/<目录名>/__init__.py` 里声明 `GROUP`。
+
+    声明了才上菜单，没声明就是内部实现（抽象层、工具包）。启动器扫目录来找，
+    不在自己那边登记任何分组。
+    """
+
+    GROUP: dict
+
+
+def normalize_group(meta, name: str) -> dict:
+    """校验一个分组的 `GROUP`。出错抛 ValueError，消息会显示在菜单里。
+
+    `order` 决定菜单里的先后，同值按目录名排。默认 50，写到中间好调整。
+    """
+    if not isinstance(meta, dict):
+        raise ValueError(f"GROUP 应该是 dict，实际是 {type(meta).__name__}")
+
+    title = str(meta.get("title", "")).strip()
+    if not title:
+        raise ValueError("GROUP 缺字段：title")
+
+    order = meta.get("order", 50)
+    if isinstance(order, bool) or not isinstance(order, (int, float)):
+        raise ValueError(f"GROUP 的 order 应该是数字，实际是 {order!r}")
+
+    clean = dict(name=name, title=title, order=float(order))
+    unknown = sorted(set(meta) - set(GROUP_KEYS))
+    if unknown:
+        clean["_unknown_keys"] = unknown
+    return clean
 
 
 def normalize_meta(meta, group: str, stem: str) -> dict:

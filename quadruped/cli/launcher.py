@@ -1,14 +1,15 @@
 """项目入口的启动器：先问你要跑哪个控制器，再把它拉起来。
 
-控制器按分组放在 `quadruped/control/` 下：
+启动器不登记任何控制器，也不登记分组。它只做一件事：扫 `quadruped/control/`
+下的每个子包，谁在自己的 `__init__.py` 里声明了 `GROUP`，谁就出现在菜单里。
 
-    virtual/     抽象层 —— 只放协议与校验，**不上菜单**（它没有能跑的东西）
-    physical/    物理控制器：直接驱动机器人（键盘、手柄、固定动作脚本）
-    embodied/    具身智能：决策层，输出动作而不是关节指令
+    physical/__init__.py    GROUP = dict(title="物理控制器 · 直接驱动机器人", order=1)
+    embodied/__init__.py    GROUP = dict(title="具身智能 · 决策层", order=2)
 
-形状由 `control/virtual/protocol.py` 定义：模块级 `META` + `main(argv)`。
-本文件扫描后两个目录、导入读 `META`、按协议校验、列成菜单。所以**加一个
-控制器就是加一个文件**，不用回来改这里。
+没声明 `GROUP` 的子包就是不上菜单的内部实现（`virtual/` 是抽象层，属于这种）。
+组里每个模块的形状由 `control/virtual/protocol.py` 定义：模块级 `META` +
+`main(argv)`。所以**加一个控制器 = 加一个文件，加一个分组 = 加一个目录**，
+两件事都不用回来改这里。
 
 为什么要开子进程而不是 import 进来直接跑：`ChannelFactoryInitialize` 一个
 进程只能调一次，第二个控制器在同一进程里初始化 DDS 会静默拿不到数据。多选
@@ -28,17 +29,11 @@ import subprocess
 import sys
 import unicodedata
 
-from quadruped.control.virtual.protocol import check_module
+from quadruped.control.virtual.protocol import check_module, normalize_group
 
 _HERE = os.path.dirname(os.path.abspath(__file__))          # quadruped/cli
 ROOT = os.path.dirname(os.path.dirname(_HERE))              # 项目根
 CONTROL_DIR = os.path.join(os.path.dirname(_HERE), "control")
-
-# 目录名 → 菜单标题。顺序就是菜单顺序。`virtual/` 不在里面：它是抽象层。
-GROUPS = (
-    ("physical", "物理控制器 · 直接驱动机器人（仿真或真机）"),
-    ("embodied", "具身智能 · 决策层（仿真/真机通用）"),
-)
 
 
 def _width(s: str) -> int:
@@ -48,6 +43,50 @@ def _width(s: str) -> int:
 
 def _pad(s: str, n: int) -> str:
     return s + " " * max(0, n - _width(s))
+
+
+class Group:
+    """一个分组。标题、顺序由该目录自己的 `__init__.py` 声明，这里不登记。"""
+
+    def __init__(self, name, title, order=50.0, error=None):
+        self.name = name
+        self.title = title
+        self.order = order
+        self.error = error
+
+    @property
+    def ok(self):
+        return self.error is None
+
+
+def discover_groups() -> list[Group]:
+    """扫 control/ 下的子包，读 `GROUP`。没声明的跳过，声明的按 order 排。
+
+    导入失败的包也留一条 —— 一个包整个 import 不进来，菜单里空着比报错更难查。
+    """
+    groups: list[Group] = []
+    for name in sorted(os.listdir(CONTROL_DIR)):
+        if name.startswith((".", "_")) or name == "__pycache__":
+            continue
+        d = os.path.join(CONTROL_DIR, name)
+        if not os.path.isfile(os.path.join(d, "__init__.py")):
+            continue                                  # 不是包（比如 controller.py 那种单文件）
+        try:
+            mod = importlib.import_module(f"quadruped.control.{name}")
+        except Exception as e:                        # noqa: BLE001
+            groups.append(Group(name, name, error=f"{type(e).__name__}: {e}"))
+            continue
+        raw = getattr(mod, "GROUP", None)
+        if raw is None:
+            continue                                  # 不上菜单的内部实现
+        try:
+            meta = normalize_group(raw, name)
+        except ValueError as e:
+            groups.append(Group(name, name, error=str(e)))
+            continue
+        groups.append(Group(name, meta["title"], meta["order"]))
+    groups.sort(key=lambda g: (g.order, g.name))
+    return groups
 
 
 class Entry:
@@ -81,39 +120,42 @@ class Entry:
         return self.error is None
 
 
-def discover() -> list[Entry]:
-    """扫菜单里的那几个目录，导入每个模块，按协议校验 META。"""
+def discover(groups: list[Group]) -> list[Entry]:
+    """在每个分组目录里扫模块，导入后按协议校验 META。"""
     found: list[Entry] = []
-    for group, _ in GROUPS:
-        d = os.path.join(CONTROL_DIR, group)
-        if not os.path.isdir(d):
-            continue
+    for g in groups:
+        if not g.ok:
+            continue                                  # 组本身 import 不进来，菜单里单独标错
+        d = os.path.join(CONTROL_DIR, g.name)
         for fn in sorted(os.listdir(d)):
             if not fn.endswith(".py") or fn.startswith("_"):
                 continue
             stem = fn[:-3]
-            module = f"quadruped.control.{group}.{stem}"
+            module = f"quadruped.control.{g.name}.{stem}"
             try:
                 mod = importlib.import_module(module)
             except Exception as e:                    # noqa: BLE001 任何导入错误都不该挡住菜单
-                found.append(Entry(group, stem, module,
+                found.append(Entry(g.name, stem, module,
                                    error=f"{type(e).__name__}: {e}"))
                 continue
-            meta, err = check_module(mod, group, stem)
+            meta, err = check_module(mod, g.name, stem)
             if meta is None and err is None:
                 continue                              # 没有 META 的不是控制器，静默跳过
-            found.append(Entry(group, stem, module, meta=meta, error=err))
+            found.append(Entry(g.name, stem, module, meta=meta, error=err))
     return found
 
 
-def render_menu(entries: list[Entry]) -> dict[int, Entry]:
+def render_menu(groups: list[Group], entries: list[Entry]) -> dict[int, Entry]:
     """打印菜单，返回 编号 → 控制器。"""
     print("\nGo2 控制器\n")
     n = 0
     index: dict[int, Entry] = {}
-    for key, heading in GROUPS:
-        print(f"  {heading}")
-        members = [e for e in entries if e.group == key]
+    for g in groups:
+        print(f"  {g.title}")
+        if not g.ok:
+            print(f"    （导入失败：{g.error}）\n")
+            continue
+        members = [e for e in entries if e.group == g.name]
         if not members:
             print("    （还没有，留空占位）\n")
             continue
@@ -130,9 +172,9 @@ def render_menu(entries: list[Entry]) -> dict[int, Entry]:
     return index
 
 
-def ask(entries: list[Entry]) -> list[Entry]:
+def ask(groups: list[Group], entries: list[Entry]) -> list[Entry]:
     """问一句选哪个。回车 = 第一个能跑的。"""
-    index = render_menu(entries)
+    index = render_menu(groups, entries)
     if not index:
         print("目录里没有控制器。")
         return []
@@ -257,9 +299,10 @@ def main(argv=None) -> int:
     ap.add_argument("--yes", "-y", action="store_true", help="冲突时不再问")
     args = ap.parse_args(head)
 
-    entries = discover()
+    groups = discover_groups()
+    entries = discover(groups)
     if args.list:
-        render_menu(entries)
+        render_menu(groups, entries)
         return 0
 
     if args.controllers:
@@ -275,7 +318,7 @@ def main(argv=None) -> int:
                 return 2
             picked.append(e)
     else:
-        picked = ask(entries)
+        picked = ask(groups, entries)
 
     return launch(picked, extra, args.yes)
 

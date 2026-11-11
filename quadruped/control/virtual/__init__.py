@@ -36,17 +36,23 @@
 """
 
 from quadruped.control.virtual.protocol import (
+    GROUP_KEYS,
     META_KEYS,
     REQUIRED_KEYS,
+    ControllerGroup,
     ControllerModule,
     check_module,
+    normalize_group,
     normalize_meta,
 )
 
 __all__ = [
+    "GROUP_KEYS",
     "META_KEYS",
     "REQUIRED_KEYS",
+    "ControllerGroup",
     "ControllerModule",
     "check_module",
+    "normalize_group",
     "normalize_meta",
 ]

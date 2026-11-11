@@ -24,3 +24,6 @@
 约定见 `../virtual/protocol.py`：模块级 `META`（`group` 写 `"physical"`）+
 `main(argv=None)`，能 `python -m quadruped.control.physical.<文件名>` 独立跑。
 """
+
+# 菜单登记：声明 GROUP 才会出现在项目入口里，标题与顺序都归本目录自己管。
+GROUP = dict(title="物理控制器 · 直接驱动机器人（仿真或真机）", order=10)
