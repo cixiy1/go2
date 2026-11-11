@@ -1,24 +1,27 @@
 """物理控制器 · 键盘遥控 Go2，带加速度限幅和按键保持。
 
-放在 `physical/` 是因为它**直接驱动机器人**：占键盘、发 `rt/lowcmd`。仿真是
-换块网卡的事（`lo0`），不是另一个控制器。
+放在 `physical/` 是因为它**直接驱动机器人**：占键盘、发速度指令。仿真是换块
+网卡的事（`lo0`），不是另一个控制器。
 
-两个控制端，对外开放的接口完全一样（都是 SportClient 那套 Init / SetTimeout /
-BalanceStand / Move / StopMove / Damp）：
+## 它不碰连接
 
-    1) 官方控制器   unitree_sdk2py 的 SportClient，走真机上的原生运动服务
-    2) 自研控制器   quadruped/control/high_level.py 的 HighLevelController
+网口枚举、域号推断、控制端构造、BalanceStand 全在抽象层
+`control/virtual/robot.py`，这里只调四个函数：
 
-后面的连接、按键循环、收工各只有一份代码，区别只在构造那一步。
+    ep    = choose_endpoint(args.preset, iface=args.iface, domain=args.domain)
+    kind  = choose_client(ep, args.client)
+    robot = connect(ep, kind, kp=..., kd=..., tau=...)
+    robot.close()
 
-环境由**网卡**决定，不再区分 sim/real 参数：lo0（回环）对着仿真器，其它网卡
-对着真机。可选的控制端由环境决定（Go2Robot.CLIENTS）：
+所以本文件里没有 `Go2Robot`、没有 `unitree_sdk2py`、没有 socket，也没有
+「回环口就是仿真」这类判断。两个控制端（官方 SportClient / 自研
+HighLevelController）对上面这套接口一致，按键循环与收工各只有一份代码。
 
-    仿真网卡 → 只有自研一个，不问，直接用
-    真实网卡 → 官方 / 自研两个，问一句
+## 环境由网卡决定
 
-仿真的桥接层只有 rt/lowcmd 与 rt/sportmodestate，没有运动服务，官方控制器
-发过去的请求只会等到超时，所以那边根本不列出来。
+`lo0`（回环）对着仿真器，其它网卡对着真机；可选控制端由环境给出 ——
+仿真只有自研一个（桥只有 rt/lowcmd 与 rt/sportmodestate，没有原生运动服务，
+官方发过去只会等到超时），真机两个都有，问一句。
 
 用法（走项目入口，环境由它替你问）：
     uv run python main.py                          # 问用哪个控制器，再问网口
@@ -67,7 +70,6 @@ import math
 import os
 import queue
 import select
-import socket
 import sys
 import termios
 import threading
@@ -75,17 +77,18 @@ import time
 import tty
 
 # 项目根进 sys.path：直接 `python quadruped/control/physical/keyboard.py` 也能跑，
-# 也让 IDE 能静态解析下面的 from quadruped.robot.body。
+# 也让 IDE 能静态解析下面的 from quadruped.control.virtual.robot。
 # 本文件在 quadruped/control/physical/ 下，往上三级才是项目根。
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
-from unitree_sdk2py.go2.sport.sport_client import SportClient
-from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
-
-from quadruped.robot.body import Go2Robot
+from quadruped.control.virtual.robot import (
+    add_endpoint_args,
+    choose_client,
+    choose_endpoint,
+    connect,
+)
 
 # ---- 入口注册信息 ---------------------------------------------------------
 # 项目根 main.py 的启动器会扫 quadruped/control/{physical,embodied}/*.py，
@@ -119,14 +122,6 @@ EPS = 1e-3
 
 # 方向键的转义序列第三字节 -> 等价按键
 ARROWS = {"A": "w", "B": "s", "C": "e", "D": "q"}
-
-CLIENT_NAMES = {"official": "官方控制器", "ours": "自研控制器"}
-
-# 菜单里给每个控制端的一行说明
-CLIENT_DESC = {
-    "official": "官方控制器    SportClient —— 真机上的原生运动服务",
-    "ours": "自研控制器    HighLevelController —— 本仓库实现",
-}
 
 HELP = """
 按键（多个方向可以同时按）：
@@ -639,302 +634,6 @@ def run_segment(client, ctrl: "Controller", key: str, duration: float) -> float:
     return peak
 
 
-def require_iface(iface: str) -> None:
-    """网卡不在就早点说清楚，别等 DDS 报一句看不懂的错。"""
-    if Go2Robot.interface_exists(iface):
-        return
-    avail = ", ".join(n for _, n in socket.if_nameindex())
-    raise RuntimeError(f"本机没有网卡 {iface}。当前可用：{avail}")
-
-
-# 真机在线调参：命令行 --kp/--kd/--tau 写这里，OursBackend 建控制器时读。
-# 放在模块级是为了不改 make_backend 的签名（它已经被三处调用）。
-TUNE: dict = {}
-
-
-class OursBackend:
-    """自研：Go2Robot → Go2Controller → HighLevelController。
-
-    高层本身就实现了 SportClient 那一套方法，所以 client 就是它本身，
-    不需要再包一层。位置和姿态取自控制器在 connect 时订阅的 rt/sportmodestate。
-    """
-
-    kind = "ours"
-    label = "自研控制器 HighLevelController"
-
-    def __init__(self, preset, domain, iface):
-        self.robot = Go2Robot(preset, domain=domain, iface=iface,
-                              kp=TUNE.get("kp"), kd=TUNE.get("kd"),
-                              tau_ff=TUNE.get("tau"))
-        c = self.robot.controller
-        self.target = f"网卡 {c.iface} / domain {c.domain}"
-        require_iface(c.iface)
-        if not self.robot.connect():
-            raise RuntimeError(
-                f"{c.iface}（domain {c.domain}）3 秒内没收到 rt/lowstate。"
-                "仿真先起 ./quadruped/sim/run_sim.sh；真机先确认 setup_en5.sh 过了")
-        self.client = c.high_level
-
-    @property
-    def loop_text(self) -> str:
-        """控制回路节奏，形如「 回路5.0/6.2」。真机抖不抖先看这个：
-        均值超过 6 ms 或 max 跳到十几毫秒，就是时序问题，不是参数问题。"""
-        st = self.robot.controller.loop_stats()
-        if not st.get("n"):
-            return ""
-        return f" 回路{st['mean']:.1f}/{st['max']:.1f}ms"
-
-    @property
-    def pos(self):
-        return self.robot.pos
-
-    @property
-    def rpy(self):
-        return self.robot.rpy
-
-    @property
-    def height(self):
-        return self.robot.controller.body_height()
-
-    @property
-    def busy(self):
-        """腿正被跳跃 / 蹲伏占着。这时候别再发速度，等动作播完自然接着走。"""
-        return self.robot.controller.busy
-
-    def jump(self) -> int:
-        return self.client.jump_async()          # 排完就返回，不等落地
-
-    @property
-    def loco_gait(self) -> str:
-        return self.client.gait_style_label
-
-    def toggle_loco_gait(self) -> str:
-        """机械 ↔ 仿生：跑法跟着换，跳跃动作也一起换（同一档风格）。"""
-        self.client.toggle_jump_style()
-        return self.client.gait_style_label
-
-    @property
-    def jump_gait(self) -> str:
-        return self.client.jump_style_label
-
-    def toggle_jump_gait(self) -> str:
-        """机械 ↔ 仿生：跳跃动作跟着换，跑法也一起换（同一档风格）。"""
-        self.client.toggle_gait_style()
-        return self.client.jump_style_label
-
-    def crouch(self) -> int:
-        return self.client.crouch_async(0.08)
-
-    def uncrouch(self) -> int:
-        return self.client.uncrouch_async()
-
-    def stand(self) -> int:
-        return self.client.stand_async()
-
-    def stop_motion(self) -> int:
-        """停车，不等收步完成 —— 20 Hz 主循环不能在这里睡着。"""
-        return self.client.stop_async()
-
-    def freeze(self) -> int:
-        """停止：中断动作并站定，仍然不阻塞。"""
-        return self.client.stand_async()
-
-    def close(self):
-        """停步 → 蹲下 → 阻尼。仿真桥不发指令就没有力矩，必须自己蹲好再松。"""
-        self.client.park()
-
-
-class OfficialBackend:
-    """官方：unitree_sdk2py 的 SportClient，调真机上的原生运动服务。
-
-    只在真机可用 —— 仿真的桥接层只收发 rt/lowcmd 和 rt/sportmodestate，
-    没有 rt/api/sport/request 的服务端，请求会一直等到超时。
-    """
-
-    kind = "official"
-    label = "官方控制器 SportClient"
-
-    def __init__(self, preset, domain, iface):
-        require_iface(iface)
-        ChannelFactoryInitialize(domain, iface)
-        self._msg = None
-        self.target = f"网卡 {iface} / domain {domain}"
-        ChannelSubscriber("rt/sportmodestate", SportModeState_).Init(
-            lambda m: setattr(self, "_msg", m), 10)
-        self.client = SportClient()
-        self.client.SetTimeout(3.0)
-        self.client.Init()
-
-    @property
-    def pos(self):
-        return tuple(self._msg.position) if self._msg is not None else None
-
-    @property
-    def rpy(self):
-        return tuple(self._msg.imu_state.rpy) if self._msg is not None else None
-
-    @property
-    def height(self):
-        return None          # 原生状态里的 position 与 base_link 差一个常数，不做换算
-
-    @property
-    def busy(self):
-        """原生服务在机器上跑，这些动作都是同步 RPC，这边没有「占着腿」的状态。"""
-        return False
-
-    def jump(self) -> int:
-        return self.client.FrontJump()      # 原生只有前跳，没有原地跳
-
-    @property
-    def loco_gait(self) -> str | None:
-        return None                         # 原生的运动步态在机器上
-
-    def toggle_loco_gait(self) -> str | None:
-        return None
-
-    @property
-    def jump_gait(self) -> str | None:
-        return None                         # 原生步态在机器上，改不了
-
-    def toggle_jump_gait(self) -> str | None:
-        return None
-
-    def crouch(self) -> int:
-        """原生没有「蹲下」这个接口，用坐下代替（后腿折叠，前腿撑地）。"""
-        return self.client.Sit()
-
-    def uncrouch(self) -> int:
-        return self.client.RiseSit()
-
-    def stand(self) -> int:
-        return self.client.BalanceStand()
-
-    def stop_motion(self) -> int:
-        return self.client.StopMove()
-
-    def freeze(self) -> int:
-        self.client.StopMove()
-        return self.client.BalanceStand()
-
-    def close(self):
-        """原生运动服务自己有平衡环，停住就行，不需要 Damp 趴下。"""
-        self.client.StopMove()
-
-
-def make_backend(kind: str, preset: str, domain: int, iface: str):
-    return (OfficialBackend if kind == "official" else OursBackend)(
-        preset, domain, iface)
-
-
-def ask_iface(default: str) -> str:
-    """开跑前问一句用哪块网口。回车 = 仿真（lo0）。
-
-    列的是本机真有的网卡（ifconfig 解析），加上真机的默认网卡 —— 那块没插的
-    时候也列出来，标一句「未检测到」，省得人以为程序没认出来。
-    """
-    sim = Go2Robot.sim_network()
-    real_pre = Go2Robot.PRESETS["real"]["iface"]
-
-    items: list[dict] = [dict(name=sim["iface"], ip="",
-                              note=f"仿真器（domain {sim['domain']}）")]
-    seen = {sim["iface"]}
-
-    for it in Go2Robot.list_ifaces():
-        n = it["name"]
-        if n in seen or n.startswith("lo"):
-            continue
-        # 没激活又没地址的虚拟网卡（Thunderbolt/USB 口的占位名）不列
-        if not it["active"] and not it["ip"] and n != real_pre:
-            continue
-        if it["ip"]:
-            off = "" if Go2Robot.is_real_robot_net(it["ip"]) \
-                else "，非 192.168.123 网段"
-            note = f"{it['ip']:<15s} 真机（domain 0{off}）"
-        else:
-            note = "真机默认网卡，当前未检测到"
-        items.append(dict(name=n, ip=it["ip"], note=note))
-        seen.add(n)
-
-    if real_pre not in seen:
-        items.append(dict(name=real_pre, ip="", note="真机默认网卡，当前未检测到"))
-
-    # 接机器人的网段（192.168.123.x）排前面，其次才是普通网卡
-    head, tail = items[:1], items[1:]
-    head += [x for x in tail if Go2Robot.is_real_robot_net(x["ip"])]
-    others = [x for x in tail if not Go2Robot.is_real_robot_net(x["ip"])]
-
-    print("\n网口：")
-    for i, it in enumerate(head + others, 1):
-        print(f"  {i}) {it['name']:<6s} {it['note']}")
-
-    order = head + others
-    default_no = next((i for i, it in enumerate(order, 1)
-                       if it["name"] == default), 1)
-    if not sys.stdin.isatty():
-        print(f"  非交互终端，用 {order[default_no - 1]['name']}")
-        return order[default_no - 1]["name"]
-
-    while True:
-        try:
-            prompt = (f"  选择 1-{len(order)}，回车 = {default_no}：" if len(order) > 1
-                      else "  回车继续：")
-            ans = input(prompt).strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return order[default_no - 1]["name"]
-        if not ans:
-            return order[default_no - 1]["name"]
-        try:
-            n = int(ans)
-        except ValueError:
-            print(f"  只认 1 到 {len(order)}。")
-            continue
-        if not 1 <= n <= len(order):
-            print(f"  只认 1 到 {len(order)}。")
-            continue
-        return order[n - 1]["name"]
-
-
-def ask_client(options: tuple[str, ...], default: str, preset: str) -> str:
-    """开跑前问一句用哪个控制端。
-
-    options 由环境给出（Go2Robot.CLIENTS）：仿真只有自研一个，真机两个都有。
-    只有一个的时候也停下来问一句 —— 让人看清自己连的是哪个控制器，回车即可，
-    比"程序自己决定了"清楚。
-    """
-    print("\n控制端：")
-    for i, kind in enumerate(options, 1):
-        print(f"  {i}) {CLIENT_DESC[kind]}")
-    if len(options) == 1 and preset == "sim":
-        print("  仿真桥只有 rt/lowcmd 和 rt/sportmodestate，没有运动服务，"
-              "官方控制器在这边连不上，所以只给这一个。")
-
-    default_key = str(options.index(default) + 1)
-    if not sys.stdin.isatty():
-        print(f"  非交互终端，按默认选：{CLIENT_NAMES[default]}")
-        return default
-
-    while True:
-        try:
-            prompt = (f"  选择 1-{len(options)}，回车 = {default_key}：" if len(options) > 1
-                      else "  回车继续：")
-            ans = input(prompt).strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return default
-        if not ans:
-            return default
-        try:
-            n = int(ans)
-        except ValueError:
-            print(f"  只认 1 到 {len(options)}。")
-            continue
-        if not 1 <= n <= len(options):
-            print(f"  只认 1 到 {len(options)}。")
-            continue
-        return options[n - 1]
-
-
 def line_control(backend, ctrl: "Controller") -> float:
     """给只按行转发输入的终端（IDEA Run 控制台）用的指令模式。返回峰值线速度。"""
     client = backend.client if backend is not None else None
@@ -1013,13 +712,7 @@ def line_control(backend, ctrl: "Controller") -> float:
 def main(argv=None) -> int:
     """argv 为 None 时读 sys.argv；启动器直接调用本函数传参。"""
     ap = argparse.ArgumentParser(description="键盘遥控 Go2（官方 SportClient / 自研高层控制器）")
-    ap.add_argument("--iface", default=None,
-                    help="网卡名：lo0 = 仿真（域号读仿真器 config.py），其它 = 真机 domain 0")
-    ap.add_argument("--preset", choices=("sim", "real"), default=None,
-                    help="快捷方式：sim=lo0/domain1，real=en5/domain0")
-    ap.add_argument("--domain", type=int, default=None, help="直接指定 DDS 域号，最高优先级")
-    ap.add_argument("--client", choices=("official", "ours"), default=None,
-                    help="跳过询问，直接用指定控制器（仿真只有 ours 可用）")
+    add_endpoint_args(ap)                # --iface / --preset / --domain / --client
     ap.add_argument("--max-speed", type=float, default=0.4, help="最大线速度 m/s，默认 0.4")
     ap.add_argument("--max-yaw", type=float, default=0.8, help="最大角速度 rad/s，默认 0.8")
     ap.add_argument("--duration", type=float, default=0.0, help="最长运行秒数，0=不限")
@@ -1040,33 +733,17 @@ def main(argv=None) -> int:
     ap.add_argument("--tau", type=float, default=None,
                     help="重力前馈强度 0~1（1=完全补偿体重），真机默认 1")
     args = ap.parse_args(argv)
-    for k in ("kp", "kd", "tau"):
-        if getattr(args, k) is not None:
-            TUNE[k] = getattr(args, k)
 
-    # 环境由网卡决定：回环 = 仿真，其它 = 真机。域号跟着走（仿真 1 / 真机 0）。
-    # 没在命令行指定网口/预设时先问一句，选完才知道这个环境能用哪些控制端。
-    if args.iface or args.preset:
-        cfg = Go2Robot.resolve(args.preset, domain=args.domain, iface=args.iface)
-    else:
-        iface = ask_iface(default=Go2Robot.sim_network()["iface"])
-        cfg = Go2Robot.resolve(iface=iface, domain=args.domain)
-    in_sim = cfg["preset"] == "sim"
-    options = Go2Robot.clients_for(cfg["preset"])     # 仿真 1 个，真机 2 个
-    default = "ours" if in_sim else "official"
-    print(f"\n网口 {cfg['iface']}，DDS 域 {cfg['domain']}"
-          f"（{'仿真' if in_sim else '真机'}）")
-
-    # 选控制端放在建 Keyboard 之前：这时终端还是正常模式，输入会回显
-    if args.client:
-        kind = args.client
-        if kind not in options:
-            print(f"{'仿真' if in_sim else '真机'}只能用"
-                  f"{' / '.join(CLIENT_NAMES[k] for k in options)}，"
-                  f"没有{CLIENT_NAMES[kind]}。")
-            return 2
-    else:
-        kind = ask_client(options, default, cfg["preset"])
+    # 接哪一台、用哪个控制端 —— 问抽象层要。这里不碰网卡名、不碰域号，
+    # 也不知道「lo0 是仿真」这条规则从哪来。
+    try:
+        ep = choose_endpoint(args.preset, iface=args.iface, domain=args.domain)
+        print(f"\n{ep.label}")
+        # 选控制端放在建 Keyboard 之前：这时终端还是正常模式，输入会回显
+        kind = choose_client(ep, args.client)
+    except ValueError as e:
+        print(e)
+        return 2
 
     # --line-mode 用 input() 读整行，全局监听会把终端设成关回显的原始模式，两者别混
     kb = (TerminalKeys() if args.line_mode
@@ -1109,7 +786,8 @@ def main(argv=None) -> int:
     try:
         if not args.dry_run:
             try:
-                backend = make_backend(kind, cfg["preset"], cfg["domain"], cfg["iface"])
+                backend = connect(ep, kind, kp=args.kp, kd=args.kd,
+                                  tau=args.tau)
             except RuntimeError as e:
                 print(f"\n连不上：{e}")
                 return 1
@@ -1117,9 +795,7 @@ def main(argv=None) -> int:
             print(f"\n控制端 {backend.label}，目标 {backend.target}")
 
             # 两个控制端都实现了这套方法，下面不再区分
-            client.SetTimeout(3.0)
-            client.Init()
-            code = client.BalanceStand()
+            code = backend.start()
             print(f"BalanceStand -> {code}")
             if code != 0:
                 print("对端没响应。官方控制器先 ping 192.168.123.161 再试。")

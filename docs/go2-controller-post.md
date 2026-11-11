@@ -47,10 +47,12 @@ quadruped/
 ├── control/                        控制算法，除了 DDS 不碰任何 IO
 │   ├── controller.py       3015 行  低层：运动学、IK、步态、力矩、200 Hz 回路
 │   ├── high_level.py        837 行  高层：动作编排，跳跃在这里
-│   ├── virtual/                     抽象层：控制器协议与 META 校验，不上菜单
-│   │   └── protocol.py               ControllerModule + normalize_meta
+│   ├── virtual/                     抽象层：控制器协议 + 机器人对接，不上菜单
+│   │   ├── protocol.py      133 行   ControllerModule / GROUP 校验
+│   │   ├── robot.py         264 行   端点解析、控制端选择、connect() 工厂
+│   │   └── backends.py      226 行   两个控制端实现（唯一 import SDK 的地方）
 │   ├── physical/                    物理控制器：直接驱动机器人
-│   │   └── keyboard.py              键盘遥控，两个后端
+│   │   └── keyboard.py     1018 行  键盘遥控，只调抽象层那四个函数
 │   └── embodied/                    具身智能控制器：决策层，暂时留空
 ├── robot/
 │   └── body.py              314 行  本体层，唯一对外入口
@@ -66,6 +68,8 @@ docs/
 ```
 
 启动器不登记任何分组：它扫 `control/` 下的子包，谁在自己的 `__init__.py` 里写了 `GROUP` 谁就上菜单，标题和顺序也归那个目录自己管。加一个分组不用碰任何中心文件。
+
+控制器不 import 本体层也不 import SDK：接哪台、怎么连由 `control/virtual/robot.py` 决定，真接上之后怎么驱由 `backends.py` 负责。物理控制器只写「按下 w 就走 0.3 m/s」。
 
 按职责分层而不是按代码行数：`control/` 是可以脱离机器人单独跑（`selftest` 就是这么跑的），`robot/` 只做装配和转发，`cli/` 只解析参数，`sim/` 是外部资产。
 
