@@ -39,7 +39,7 @@ class HighLevelController:
         Init / SetTimeout / BalanceStand / StandUp / StandDown / Sit / RiseSit /
         RecoveryStand / Damp / Move / StopMove / BodyHeight / Euler /
         Hello / Stretch / SwitchGait
-        名字、参数、语义都按原生来，所以 test/keyboard_move.py 这类现成脚本
+        名字、参数、语义都按原生来，所以 quadruped/control/virtual/keyboard.py 这类现成脚本
         不用改逻辑就能直接驱动（只换连接的那一个对象）。
 
     基础动作（静态姿态类）

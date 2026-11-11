@@ -1,4 +1,7 @@
-"""键盘遥控 Go2，带加速度限幅和按键保持。
+"""虚拟控制器 · 键盘遥控 Go2，带加速度限幅和按键保持。
+
+「虚拟」指它跑在仿真器上（`lo0`）。同一份代码也能驱动真机，那是环境切换
+不是另一个控制器 —— 真机专有的诊断/只读工具放 `quadruped/control/physical/`。
 
 两个控制端，对外开放的接口完全一样（都是 SportClient 那套 Init / SetTimeout /
 BalanceStand / Move / StopMove / Damp）：
@@ -17,16 +20,19 @@ BalanceStand / Move / StopMove / Damp）：
 仿真的桥接层只有 rt/lowcmd 与 rt/sportmodestate，没有运动服务，官方控制器
 发过去的请求只会等到超时，所以那边根本不列出来。
 
-用法：
-    ./.venv/bin/python test/keyboard_move.py                 # 问网口、问控制器
-    ./.venv/bin/python test/keyboard_move.py --iface en5     # 不问网口，真机
-    ./.venv/bin/python test/keyboard_move.py --iface en5 --client ours   # 都不问
-    ./.venv/bin/python test/keyboard_move.py --max-speed 0.25
-    ./.venv/bin/python test/keyboard_move.py --duration 15    # 最多跑 15 秒，到点自动停
-    ./.venv/bin/python test/keyboard_move.py --keys terminal  # 强制终端按键（无权限时）
-    ./.venv/bin/python test/keyboard_move.py --keys-anywhere  # 全局监听不限前台应用
-    ./.venv/bin/python test/keyboard_move.py --line-mode      # 指令模式，IDE 控制台也能用
-    ./.venv/bin/python test/keyboard_move.py --dry-run        # 只打印速度，不连狗
+用法（走项目入口，环境由它替你问）：
+    uv run python main.py                          # 问用哪个控制器，再问网口
+    uv run python main.py keyboard -- --iface en5  # 跳过选择，直接真机
+直接跑这个模块也行：
+    uv run python -m quadruped.control.virtual.keyboard              # 问网口、问控制器
+    uv run python -m quadruped.control.virtual.keyboard --iface en5  # 不问网口，真机
+    uv run python -m quadruped.control.virtual.keyboard --iface en5 --client ours
+    uv run python -m quadruped.control.virtual.keyboard --max-speed 0.25
+    uv run python -m quadruped.control.virtual.keyboard --duration 15  # 最多跑 15 秒
+    uv run python -m quadruped.control.virtual.keyboard --keys terminal  # 强制终端按键
+    uv run python -m quadruped.control.virtual.keyboard --keys-anywhere  # 全局监听
+    uv run python -m quadruped.control.virtual.keyboard --line-mode   # 指令模式
+    uv run python -m quadruped.control.virtual.keyboard --dry-run     # 不连狗
 
 不带 --iface / --preset 时先列本机网卡让你选（回车 = 仿真），选完再按那个
 环境列出可选的控制端。非交互终端（管道、重定向）两项都直接用默认。
@@ -68,9 +74,10 @@ import threading
 import time
 import tty
 
-# 项目根进 sys.path：`python test/keyboard_move.py` 才能 import quadruped.*，
+# 项目根进 sys.path：直接 `python quadruped/control/virtual/keyboard.py` 也能跑，
 # 也让 IDE 能静态解析下面的 from quadruped.robot.body。
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 本文件在 quadruped/control/virtual/ 下，往上三级才是项目根。
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
@@ -79,6 +86,19 @@ from unitree_sdk2py.go2.sport.sport_client import SportClient
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
 
 from quadruped.robot.body import Go2Robot
+
+# ---- 入口注册信息 ---------------------------------------------------------
+# 项目根 main.py 的启动器会扫 quadruped/control/{virtual,physical}/*.py，
+# 导入模块读这个字典来列菜单。加一个新控制器 = 加一个带 META 的文件。
+#   owns_cmd   会往 rt/lowcmd 发指令（两个同时选会互相覆盖，启动器会拦）
+#   owns_keys  接管键盘（两个同时选抢按键，启动器也会拦）
+META = dict(
+    title="键盘遥控",
+    env="virtual",
+    desc="w/a/s/d/q/e 边走边转，空格跳跃、Ctrl 蹲起，1~9 调速度档",
+    owns_cmd=True,
+    owns_keys=True,
+)
 
 # 每个方向的单位向量 (vx, vy, vyaw)。vy 正为左，vyaw 正为逆时针。
 DIRS = {
@@ -989,7 +1009,8 @@ def line_control(backend, ctrl: "Controller") -> float:
     return peak
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    """argv 为 None 时读 sys.argv；启动器直接调用本函数传参。"""
     ap = argparse.ArgumentParser(description="键盘遥控 Go2（官方 SportClient / 自研高层控制器）")
     ap.add_argument("--iface", default=None,
                     help="网卡名：lo0 = 仿真（域号读仿真器 config.py），其它 = 真机 domain 0")
@@ -1017,7 +1038,7 @@ def main() -> int:
                     help="关节阻尼，不给就用控制器默认（1.5）")
     ap.add_argument("--tau", type=float, default=None,
                     help="重力前馈强度 0~1（1=完全补偿体重），真机默认 1")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     for k in ("kp", "kd", "tau"):
         if getattr(args, k) is not None:
             TUNE[k] = getattr(args, k)
