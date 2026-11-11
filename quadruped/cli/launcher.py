@@ -214,8 +214,9 @@ def ask(groups: list[Group], entries: list[Entry]) -> list[Entry]:
 #   运控用环境变量 `GO2_MOTION`，由 `make_gait` 读 —— 所有入口的步态最后都过
 #   那里，一处覆盖全部。启动器只负责收集，往下传。
 #
-# 运控默认关：开启后回路周期 p95 从 5.8 ms 涨到 8.2 ms，而验收门限是 4 ms
-# （见 TODO.md Step 3）。默认开等于每次开机都踩在超时线上。
+# 运控默认开（三层是本体，vmc 退成回滚选项）。代价是回路周期 p95 从 5.8 ms
+# 涨到 8.2 ms，超过 5 ms 的标称周期（见 TODO.md Step 3）；单帧计算只有 1.0 ms，
+# 多出来的是 50 Hz 线程与 200 Hz 主回路抢 GIL。要单层给 `--motion vmc`。
 
 ENVS = [
     ("sim-new", "仿真（一起起）", "先拉仿真器，就绪后接控制器"),

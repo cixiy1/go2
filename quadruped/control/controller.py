@@ -354,7 +354,7 @@ _GAIT_ALIASES = {"trot": "mech", "bound": "bio"}
 # 「整条腿在地上刨，一步都走不动」）、抬脚抬高（真机足端有橡胶、地面软，
 # 6 cm 的余量经常蹭地）。`mech` / `bio` 不分叉，真机与仿真同一套参数。
 #
-# `mode` 选力路的实现（`"mpc"` 默认 / `"vmc"` 现役的旧路），直接透传给
+# `mode` 选力路的实现（`"mpc"` 默认 / `"vmc"` 回滚用的旧路），直接透传给
 # GaitParams。它不属于步态形态，只是「同一套步态参数换一条力路」的开关。
 #
 # **默认 mpc。** 三层运控是这套代码的本体，vmc 留着是为了回滚和 A/B。
@@ -2769,9 +2769,10 @@ class Go2Controller:
         style = _GAIT_ALIASES.get(style, style)
         if style not in self.GAIT_STYLES:
             raise ValueError(f"没有这种运动步态：{style}，只有 {self.GAIT_STYLES}")
-        # 力路跟着走。**不能靠默认值**：`make_gait` 的 mode 默认是 vmc，切一次
-        # 档就把 mpc 静默换成 vmc，而 MPC 线程还在跑、白烧 CPU，力矩却是 vmc
-        # 算的，从任何指标上都看不出发生了什么。
+        # 力路跟着走。**不能靠默认值**：不传 mode 会落到 `make_gait` 的环境变量
+        # 兜底（`GO2_MOTION`，通常是 mpc），切一次档就把当前力路静默换掉，而
+        # MPC 线程还在跑、白烧 CPU，力矩却是另一条路算的，从任何指标上都看不出
+        # 发生了什么。所以显式把现在的 mode 传下去。
         self.gait = make_gait(style, self.height, self.real, self.gait.mode)
         self.gait_style = style
         # 反馈滤波状态跟着步态一起清：上一套步态跑出来的俯仰/速度残值，喂给
