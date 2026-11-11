@@ -186,10 +186,12 @@ class GaitParams:
     两档风格，和跳跃风格同名同义，`offsets` 决定谁跟谁同相：
 
     - `mech` 机械：对角腿一组（FL+RR / FR+RL），占空比 0.5，任何时刻都有两条
-      腿着地。就是最初那套标准小跑：稳、省事，但看着像机器。
-    - `bio`  仿生：四腿按左后→右后→左前→右前错开（横向序列疾驰），占空比
-      0.55，任何时刻至少两条腿着地。支撑力连续，机身不像 bound 那样一节一拍
-      地砸地，但需要的反馈也更多。
+      腿着地。就是最初那套标准小跑：稳、省事，但看着像机器。对应官方的灵动
+      （FreeWalk）。
+    - `bio`  仿生：前腿一组、后腿一组（FL+FR / RL+RR），两组差半个周期，占空比
+      0.55，两组之间各留 5% 的四脚支撑、不腾空。对应官方的并腿跑（FreeBound）。
+
+    另有一套 `gallop`（四腿按左后→右后→左前→右前错开）留做对照，不进切换序列。
     """
 
     def __init__(self, period=0.5, duty=0.5, swing_height=0.06,
@@ -275,7 +277,7 @@ class GaitParams:
         # 刚好抵消那点蹭出来的推力）。压 8 mm 换来稳定支撑，代价是机身低一点点。
         self.stance_sink = stance_sink
         # 跑起来时把机身再抬高多少（米）。腿伸得直一点，步幅才有余量，
-        # 四腿错相的步态也不至于在腿弯到底的时候被顶翻。仿生档取 1.5 cm。
+        # 四腿错相那套（gallop）也不至于在腿弯到底的时候被顶翻，它取 1.5 cm。
         self.stand_raise = stand_raise
         # 支撑相足端速度的闭环增益。**这一项决定往前跑还是往后跑。**
         #
@@ -326,23 +328,29 @@ class GaitParams:
         return vx * self.stance_time, vy * self.stance_time
 
 
-# 旧名字映射到新的两档，外部脚本还按 trot/gallop 调就自动走对应那一档。
-_GAIT_ALIASES = {"trot": "mech", "gallop": "bio"}
+# 旧名字映射到新的两档：trot 走 mech，bound 走 bio。gallop 没有别名，
+# 它是留做对照的第三套（四腿错相），不进切换序列。
+_GAIT_ALIASES = {"trot": "mech", "bound": "bio"}
 
 
 # 按风格造一套步态参数。
 #
-# 只有两档，和跳跃风格 mech/bio 同名同义，两边始终一致：
+# 对外两档，和跳跃风格 mech/bio 同名同义，两边始终一致。两档都照着官方的
+# 两个运动模式取，名字能对上，调参才有参照：
 #
-# - `mech` 机械：高层运动一直用的那套标准小跑（对角腿交替、0.5 s 周期、
-#   抬脚 6 cm、步幅 7.5 cm）。原本的参数，没有任何反馈和速度闭环。慢，
-#   但每一步都一样，不会走样。
-# - `bio`  仿生：我们自己按猫科步法图做的横向序列疾驰（左后→右后→左前→
-#   右前），四腿错开、支撑力连续，腿上有速度闭环和姿态反馈。
+# - `mech` 机械＝官方灵动（FreeWalk）：高层运动一直用的那套标准小跑（对角腿
+#   交替、0.5 s 周期、抬脚 6 cm、步幅 7.5 cm）。原本的参数，没有任何反馈和
+#   速度闭环。慢，但每一步都一样，不会走样。
+# - `bio`  仿生＝官方并腿跑（FreeBound）：前腿一组、后腿一组，两组差半个
+#   周期，占空比 0.55 —— 两组之间各有 5% 的四脚着地重叠，不会腾空。腿上有
+#   速度闭环和俯仰反馈。
 #
-# `real=True` 现在只影响 `bio`：步幅收小（仿真里打滑是「损失」，真机打滑是
+# 另留一套 `gallop`（横向序列 RL→RR→FL→FR 错相）做对照，不进切换序列，
+# 要试的时候 `make_gait("gallop")` 直接给。
+#
+# `real=True` 只影响 `gallop`：步幅收小（仿真里打滑是「损失」，真机打滑是
 # 「整条腿在地上刨，一步都走不动」）、抬脚抬高（真机足端有橡胶、地面软，
-# 6 cm 的余量经常蹭地）。`mech` 不分叉，真机与仿真同一套原样参数。
+# 6 cm 的余量经常蹭地）。`mech` / `bio` 不分叉，真机与仿真同一套参数。
 def make_gait(style: str, height: float = NOMINAL_HEIGHT,
               real: bool = False) -> GaitParams:
     neutral = _neutral_feet(height)
@@ -368,28 +376,28 @@ def make_gait(style: str, height: float = NOMINAL_HEIGHT,
         # stride 0.10 / speed_range 0.22，一并撤掉）。
         return GaitParams(period=0.5, duty=0.5, neutral=_neutral_feet(height),
                           name="mech")
-    if style == "bio":
+    if style == "gallop":
         # 横向序列疾驰（rotary gallop），猫科和犬科真正跑起来用的就是这一套：
         # 左后 → 右后 → 左前 → 右前，相邻两条腿只错开 12% 周期，前后两组
-        # 之间错开 38%。占空比 0.55 > 相邻相位差 0.38，所以**任何时刻都至少
-        # 有两条腿在地上**，不会四条腿一起腾空。
+        # 之间错开 38%。占空比 0.55 > 相邻相位差 0.38，所以任何时刻都至少
+        # 有两条腿在地上，不会四条腿一起腾空。
         #
-        # 为什么不用 bound：bound 是前后两组同时落、同时起，两组之间必然留出
-        # 腾空。腾空那一瞬间机身完全失去支撑，落地又是两条腿一起砸，冲击大、
-        # 姿态一节一拍地点头。gallop 四腿错开，支撑力连续，落地是单腿轻接。
+        # 这套不进切换序列，只做对照：支撑力连续、落地单腿轻接，是这几套里
+        # 最像活物的一套；代价是四腿错相，反馈修正会落到正在摆动的腿上，
+        # 姿态项只能全关（开了反而翻）。
         if real:
             # 真机档。步幅 0.09（原来给 0.07，实测根本走不动：四腿错相时任意
             # 时刻只有 1~2 条腿支撑，0.07 的行程蹬不破静摩擦，指令 0.6 只跑出
             # 0.0 m/s；0.09 立刻回到 0.41）。抬脚 9.5 cm，落脚点反馈减半 ——
             # 0.15 的 reach_err 在仿真里是稳定器，真机上地面不平会变成来回抢。
             #
-            # 速度闭环 1.5 而不是 1.2：仿生档四腿错相，支撑力在 1~2 条腿之间
+            # 速度闭环 1.5 而不是 1.2：四腿错相时支撑力在 1~2 条腿之间
             # 来回交班，闭环弱一点就跟不上，实测同一个配置反复跑会在 0.14 和
             # 0.41 两个吸引子之间跳。1.5 之后四次都落在 0.35~0.40。
             return GaitParams(period=0.44, duty=0.55, swing_height=0.095,
                               offsets={"RL": 0.00, "RR": 0.12,
                                        "FL": 0.50, "FR": 0.62},
-                              neutral=_neutral_feet(height + 0.015), name="bio",
+                              neutral=_neutral_feet(height + 0.015), name="gallop",
                               stand_raise=0.015,
                               stride_gain=1.15,
                               stride_max=0.090,
@@ -403,7 +411,7 @@ def make_gait(style: str, height: float = NOMINAL_HEIGHT,
         return GaitParams(period=0.44, duty=0.55, swing_height=0.075,
                           offsets={"RL": 0.00, "RR": 0.12,
                                    "FL": 0.50, "FR": 0.62},
-                          neutral=_neutral_feet(height + 0.015), name="bio",
+                          neutral=_neutral_feet(height + 0.015), name="gallop",
                           # 抬起来跑。四腿错相时左右腿落地差 0.05 s，机身被
                           # 交替横向推；腿弯着跑（低机身）一被推就翻。抬高
                           # 1.5 cm 腿更直、支撑余量大，实测 12 次里 11 次站住，
@@ -424,7 +432,7 @@ def make_gait(style: str, height: float = NOMINAL_HEIGHT,
                           bounce=0.0,
                           lean=0.12,
                           # 落脚点：基础前移一点，再按速度误差 -0.15 前后调。
-                          # 这一项是仿生档的稳定器 —— 机身快了就往前多踩一点
+                          # 这一项是这套步态的稳定器 —— 机身快了就往前多踩一点
                           # 制动，慢了就少踩，实测 4/4 不翻、速度从 0.20 提到
                           # 0.35 m/s；给到 0.25 就过头，四脚一起刨地直接翻。
                           reach=0.02,
@@ -432,16 +440,19 @@ def make_gait(style: str, height: float = NOMINAL_HEIGHT,
                           # 支撑腿主动压地 6 mm，撑出稳定的法向力；没有它脚
                           # 在「刚好贴地」附近时接时离，摩擦时有时无。
                           stance_sink=0.006,
-                          # 仿生档实际交付 0.40 左右，指令封到 0.45。见
+                          # 这套实际交付 0.40 左右，指令封到 0.45。见
                           # _gait_feet_publish 顶部那段注释。
                           speed_range=(0.0, 0.45))
-    if style == "bound":
-        # 前腿一组、后腿一组。占空比 0.55：两组各有 5% 时间的四脚着地重叠，
-        # 换腿那一瞬间不会出现「只剩一组腿撑全机」——duty 正好 0.5 时前腿
-        # 单独支撑半个周期，质心永远在支撑点后方 19 cm，机身后仰到 ±90°。
+    if style == "bio":
+        # 并腿跑，对应官方的 FreeBound：前腿一组、后腿一组，两组差半个周期。
+        #
+        # 占空比 0.55，两组各有 5% 时间四脚着地重叠，换腿那一下不会出现
+        # 「只剩一组腿撑全机」——duty 正好 0.5 时前腿单独支撑半个周期，质心
+        # 永远在支撑点后方 19 cm，机身后仰到 90°。两组首尾相接也不留腾空，
+        # 所以落地是两条腿一起接、不是砸。
         return GaitParams(period=0.40, duty=0.55, swing_height=0.080,
                           offsets={"FL": 0.5, "FR": 0.5, "RL": 0.0, "RR": 0.0},
-                          neutral=neutral, name="bound",
+                          neutral=neutral, name="bio",
                           # 步幅倍率。有了下面那条速度闭环，脚该扫多快是算出来的，
                           # 不再需要靠放大倍率去打滑硬推；1.2 只是让步幅比「刚好
                           # 追上机身」再大一点，留下一点推力余量。
@@ -479,7 +490,7 @@ def make_gait(style: str, height: float = NOMINAL_HEIGHT,
                           speed_range=None)
     raise ValueError(
         f"没有这种运动步态：{style}，只有 ('mech', 'bio')"
-        f"（旧名 trot→mech、gallop→bio 仍可用，另留 bound 做对照）")
+        f"（旧名 trot→mech、bound→bio 仍可用；gallop 是对照用的第三套）")
 
 
 # 四足对称站位（模块级版本，GaitParams 初始化时用）。
@@ -2196,10 +2207,13 @@ class Go2Controller:
 
     # -- 运动步态风格 --------------------------------------------------
 
+    # 两档，名字跟官方的两个运动模式对得上，调参才有参照：
+    #   mech  标准小跑 → 官方灵动（FreeWalk）
+    #   bio   并腿跑   → 官方并腿跑（FreeBound）
     GAIT_STYLES = ("mech", "bio")
     GAIT_STYLE_NAMES = {
-        "mech": "机械（标准小跑）",
-        "bio": "仿生（横向序列疾驰）",
+        "mech": "机械（标准小跑，同官方灵动）",
+        "bio": "仿生（并腿跑）",
     }
 
     # 换运动步态（`mech` 机械 / `bio` 仿生），返回换完之后的那个。
