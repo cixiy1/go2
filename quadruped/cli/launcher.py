@@ -273,6 +273,74 @@ def _pick(title: str, rows: list[tuple], default: int = 0) -> str:
         print(f"  「{raw}」不是编号")
 
 
+# 能改的通用项。**控制器自己的参数不在这里** —— 键盘的速度上限、按键方案、
+# 行模式这些只有键盘控制器认识，搬到这层就等于替每个控制器维护一份 argparse，
+# 加一个控制器要回来改一次。它们在控制器自己启动时问。
+CLIENTS = [
+    ("__none__", "默认", "由控制端自己挑"),
+    ("ours", "自研", "本仓库的 HighLevelController"),
+    ("official", "官方", "真机上的原生运动服务，仿真不可用"),
+]
+
+SETTING_LABELS = [
+    ("环境", "env"), ("运控", "motion"), ("刚度 kp", "kp"),
+    ("阻尼 kd", "kd"), ("控制端", "client"),
+]
+
+
+def _fmt_setting(cfg: dict, key: str) -> str:
+    v = cfg.get(key)
+    if key == "env":
+        return dict((k, f"{label}  {note}") for k, label, note in ENVS)[v]
+    if key == "motion":
+        return dict((k, label) for k, label, _ in MOTIONS)[v]
+    if key == "client":
+        return dict((k, label) for k, label, _ in CLIENTS)[v]
+    return "默认" if v is None else str(v)
+
+
+# 一屏列出所有能设的项，输编号改某一项，回车就按这套跑。
+#
+# 不做成"逐项都问一遍"：五个问题连着问，全默认也要敲五次回车。这里是先给
+# 一屏现状，改哪个说哪个。
+def ask_settings() -> dict:
+    cfg = dict(env="sim-new", motion="vmc", kp=None, kd=None, client="__none__")
+    while True:
+        print("\n当前配置（回车 = 按这套跑，输编号改）")
+        for i, (label, key) in enumerate(SETTING_LABELS, 1):
+            print(f"  {i}  {_pad(label, 10)}{_fmt_setting(cfg, key)}")
+        try:
+            raw = input("改哪一项（回车开跑）：").strip()
+        except EOFError:
+            print()
+            return cfg
+        if not raw:
+            return cfg
+        if not raw.isdigit() or not 1 <= int(raw) <= len(SETTING_LABELS):
+            print(f"  「{raw}」不是编号")
+            continue
+        key = SETTING_LABELS[int(raw) - 1][1]
+        if key == "env":
+            cfg["env"] = _pick("环境", ENVS)
+        elif key == "motion":
+            cfg["motion"] = _pick("运控", MOTIONS)
+        elif key == "client":
+            cfg["client"] = _pick("控制端", CLIENTS)
+        else:
+            try:
+                v = input(f"  {key}（数字，回车 = 默认）：").strip()
+            except EOFError:
+                print()
+                continue
+            if not v:
+                cfg[key] = None
+                continue
+            try:
+                cfg[key] = float(v)
+            except ValueError:
+                print(f"  「{v}」不是数字")
+
+
 # 起 MuJoCo 仿真器。路径与 mjpython 的判断都在脚本里，这里只管把终端换过去。
 # 仿真器是长驻 GUI，会占住这个终端，所以和控制器必须分两个终端跑。
 def run_sim() -> int:
@@ -352,9 +420,8 @@ def check_conflict(entries: list[Entry], assume_yes: bool) -> bool:
     return ans in ("y", "yes")
 
 
-def launch(entries: list[Entry], extra: list[str], preset: str | None = None,
-           motion: str | None = None, assume_yes: bool = False,
-           with_sim: bool = False) -> int:
+def launch(entries: list[Entry], extra: list[str], cfg: dict,
+           assume_yes: bool = False, with_sim: bool = False) -> int:
     if not entries:
         return 1
     if extra and len(entries) > 1:
@@ -364,17 +431,29 @@ def launch(entries: list[Entry], extra: list[str], preset: str | None = None,
         print("已取消。")
         return 2
 
+    preset, auto_sim = ENV_SPEC[cfg["env"]]
+    with_sim = with_sim or auto_sim
+    motion = cfg["motion"]
+
     # 只有仿真才替用户锁死网口（就那一个 lo0，多问一步没意义）。
     #
     # 真机**不传 preset**：`choose_endpoint` 只在 `preset is None and iface is
     # None` 时才列网口，传了 real 就把人钉死在 en5 —— 而真机可能接在 en5，
     # 也可能是枚举成 en0 的 USB 网卡，猜错等于连不上。让它把网口列出来自己挑。
-    cmd_extra = (["--preset", preset] if preset == "sim" else []) + extra
-    env = dict(os.environ)
-    if motion:
-        env["GO2_MOTION"] = motion
+    base: list[str] = []
+    if preset == "sim":
+        base += ["--preset", "sim"]
+    for key in ("kp", "kd"):
+        if cfg.get(key) is not None:
+            base += [f"--{key}", f"{cfg[key]:g}"]
+    if cfg.get("client") and cfg["client"] != "__none__":
+        base += ["--client", cfg["client"]]
+    cmd_extra = base + extra          # 用户在 `--` 后给的排最后，才能覆盖
 
-    print(f"\n环境 {preset or '默认'} / 运控 {motion or '默认'}")
+    env = dict(os.environ)
+    env["GO2_MOTION"] = motion
+
+    print(f"\n环境 {preset} / 运控 {motion}")
     os.chdir(ROOT)                       # 让 `-m` 从项目根找包
     cmds = [[sys.executable, "-m", e.module] + cmd_extra for e in entries]
 
@@ -459,8 +538,9 @@ def main(argv=None) -> int:
 
     if args.controllers:
         # 直接点名：不再问，缺的用默认（仿真 / VMC）。
-        preset, motion = args.preset or "sim", args.motion or "vmc"
-        with_sim = args.with_sim
+        cfg = dict(env="real" if args.preset == "real" else "sim",
+                   motion=args.motion or "vmc", kp=None, kd=None,
+                   client="__none__")
         by_stem = {e.stem: e for e in entries}
         picked = []
         for name in args.controllers:
@@ -473,21 +553,22 @@ def main(argv=None) -> int:
                 return 2
             picked.append(e)
     else:
-        # 交互：环境 → 运控 → 控制器，三段都问。命令行给过的就不再问。
-        with_sim = args.with_sim
-        if args.preset is None:
-            preset, auto_sim = ENV_SPEC[_pick("环境", ENVS)]
-            with_sim = with_sim or auto_sim
+        # 交互：命令行没给环境/运控，就摆一屏配置让人改，再选控制器。
+        if args.preset is None and args.motion is None:
+            cfg = ask_settings()
         else:
-            preset = args.preset
-        motion = args.motion or _pick("运控", MOTIONS)
+            cfg = dict(env="real" if args.preset == "real" else "sim",
+                       motion=args.motion or "vmc", kp=None, kd=None,
+                       client="__none__")
         picked = ask(groups, entries)
 
-    if with_sim and preset == "real":
-        print("真机不能一起起仿真器。")
-        return 2
+    if args.with_sim:
+        if cfg["env"] == "real":
+            print("真机不能一起起仿真器。")
+            return 2
+        cfg["env"] = "sim-new"           # 明确要求一起起，就覆盖配置里的那一档
 
-    return launch(picked, extra, preset, motion, args.yes, with_sim=with_sim)
+    return launch(picked, extra, cfg, args.yes, with_sim=args.with_sim)
 
 
 if __name__ == "__main__":
