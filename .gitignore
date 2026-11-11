@@ -17,9 +17,12 @@ __pycache__/
 # 不一样 —— 代码要能回滚，日志不需要跟着版本走。
 .workbuddy/
 
-# ---- 第三方克隆，各自独立版本管理 ----
-# 三者都不是本项目代码，改动以 patches/*.local.patch 记录。
-# 重新克隆的步骤见 patches/README.md。
+# ---- 第三方克隆 ----
+# `unitree_sdk2_python` 进仓库（上游 unitreerobotics/unitree_sdk2_python @ 814556d）：
+# `utils/thread.py` 上有 macOS 补丁 —— timerfd 是 Linux 专有接口，原实现在 import
+# 阶段就 dlsym 失败，整个 utils.thread 导入不了，unitree_mujoco 的 bridge 起不来。
+# 不带上这份补丁，clone 下来在 macOS 上直接跑不了。内部 .git 已移除，纳入本仓库管理。
+#
+# 另外两个仍然忽略：体积大、没有本地改动、重新 clone 即可。
 /Yuki/
-/unitree_sdk2_python/
 /quadruped/sim/unitree_mujoco/
