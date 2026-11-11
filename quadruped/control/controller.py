@@ -191,7 +191,7 @@ class GaitParams:
                  stride_max=0.075, speed_range=None,
                  reach=0.0, reach_err=0.0, stance_sink=0.0,
                  stand_raise=0.0, damp_z=0.0, wrench=1.0,
-                 speed_loop=0.0, stance_spread=0.0):
+                 speed_loop=0.0, stance_spread=0.0, mode="vmc"):
         if not 0.05 < duty < 0.95:
             raise ValueError(f"duty={duty} 不合理，应在 (0.05, 0.95)")
         self.period = period            # 一个完整步态周期，秒
@@ -297,6 +297,18 @@ class GaitParams:
         # 硬，凑得出来；真机地面软、还不平，凑不出来就打滑。机身层直接把
         # 「要多少力」算清楚再下发，地面软硬只影响脚陷多深，不影响出力大小。
         self.wrench = wrench
+        # 力路的实现，`"vmc" | "mpc"`。见 `_mpc_feet_publish` 上那段：
+        #
+        # - `vmc` 现役路径：`_wrench_cmd` 只按**当前这一帧**的姿态/高度/速度误差
+        #   直接给出 6 维 wrench，再经 `body_wrench_tau` 逐腿分 Jᵀf。无预测、
+        #   无摩擦锥、无腿自重与惯性项。
+        # - `mpc` 自研路径：50 Hz 的 SRBD-MPC 出地面反力序列 → 200 Hz 的 WBC
+        #   把它连同足端轨迹一起解成关节力矩。
+        #
+        # 默认 vmc：自研那一路还在 A/B 阶段，出问题要能一秒钟退回去。
+        if mode not in ("vmc", "mpc"):
+            raise ValueError(f"mode={mode!r} 不认识，只有 'vmc' 与 'mpc'")
+        self.mode = mode
         self.a3, self.a4 = _swing_poly_coeffs(duty)
 
     # 一个周期里四脚全离地的时间。两组支撑不重叠就是腾空相。
@@ -340,10 +352,18 @@ _GAIT_ALIASES = {"trot": "mech", "bound": "bio"}
 # `real=True` 只影响 `gallop`：步幅收小（仿真里打滑是「损失」，真机打滑是
 # 「整条腿在地上刨，一步都走不动」）、抬脚抬高（真机足端有橡胶、地面软，
 # 6 cm 的余量经常蹭地）。`mech` / `bio` 不分叉，真机与仿真同一套参数。
+#
+# `mode` 选力路的实现（`"vmc"` 现役 / `"mpc"` 自研），直接透传给 GaitParams。
+# 它不属于步态形态，只是方便「同一套步态参数换一条力路做 A/B」。
 def make_gait(style: str, height: float = NOMINAL_HEIGHT,
-              real: bool = False) -> GaitParams:
+              real: bool = False, mode: str = "vmc") -> GaitParams:
     neutral = _neutral_feet(height)
     style = _GAIT_ALIASES.get(style, style)
+
+    def _gp(**kw):
+        kw.setdefault("mode", mode)
+        return GaitParams(**kw)
+
     if style == "mech":
         # 标准小跑，原样参数：对角腿、0.5 s 周期、duty 0.5、抬脚 6 cm、
         # 步幅上限 7.5 cm。零反馈、零速度闭环、不压地、不外扩站宽。
@@ -363,7 +383,7 @@ def make_gait(style: str, height: float = NOMINAL_HEIGHT,
         #
         # 真机与仿真**同一套**，不再分叉（真机档曾单独给 swing 0.055 /
         # stride 0.10 / speed_range 0.22，一并撤掉）。
-        return GaitParams(period=0.5, duty=0.5, neutral=_neutral_feet(height),
+        return _gp(period=0.5, duty=0.5, neutral=_neutral_feet(height),
                           name="mech")
     if style == "gallop":
         # 横向序列疾驰（rotary gallop），猫科和犬科真正跑起来用的就是这一套：
@@ -383,7 +403,7 @@ def make_gait(style: str, height: float = NOMINAL_HEIGHT,
             # 速度闭环 1.5 而不是 1.2：四腿错相时支撑力在 1~2 条腿之间
             # 来回交班，闭环弱一点就跟不上，实测同一个配置反复跑会在 0.14 和
             # 0.41 两个吸引子之间跳。1.5 之后四次都落在 0.35~0.40。
-            return GaitParams(period=0.44, duty=0.55, swing_height=0.095,
+            return _gp(period=0.44, duty=0.55, swing_height=0.095,
                               offsets={"RL": 0.00, "RR": 0.12,
                                        "FL": 0.50, "FR": 0.62},
                               neutral=_neutral_feet(height + 0.015), name="gallop",
@@ -397,7 +417,7 @@ def make_gait(style: str, height: float = NOMINAL_HEIGHT,
                               reach=0.02, reach_err=0.08,
                               stance_sink=0.004,
                               speed_range=(0.0, 0.45))
-        return GaitParams(period=0.44, duty=0.55, swing_height=0.075,
+        return _gp(period=0.44, duty=0.55, swing_height=0.075,
                           offsets={"RL": 0.00, "RR": 0.12,
                                    "FL": 0.50, "FR": 0.62},
                           neutral=_neutral_feet(height + 0.015), name="gallop",
@@ -439,7 +459,7 @@ def make_gait(style: str, height: float = NOMINAL_HEIGHT,
         # 「只剩一组腿撑全机」——duty 正好 0.5 时前腿单独支撑半个周期，质心
         # 永远在支撑点后方 19 cm，机身后仰到 90°。两组首尾相接也不留腾空，
         # 所以落地是两条腿一起接、不是砸。
-        return GaitParams(period=0.40, duty=0.55, swing_height=0.080,
+        return _gp(period=0.40, duty=0.55, swing_height=0.080,
                           offsets={"FL": 0.5, "FR": 0.5, "RL": 0.0, "RR": 0.0},
                           neutral=neutral, name="bio",
                           # 步幅倍率。有了下面那条速度闭环，脚该扫多快是算出来的，
@@ -762,6 +782,66 @@ class Go2Controller:
     # pitch 稳定停在 −10°、速度掉一半，就是这个饱和。
     # 14 覆盖到 20°（13.6 N·m），给分配器留的余量也还在摩擦锥之内。
     WRENCH_M_MAX = 14.0
+
+    # ------------------------------------------------------------------
+    # 自研力路：MPC + WBC（gait.mode == "mpc"）
+    # ------------------------------------------------------------------
+    # 两层的时间尺度不一样：MPC 看 240 ms 的 horizon，50 Hz 就够，而且它一帧
+    # 4.9 ms（144 维稠密 QP），塞进 200 Hz 的 5 ms 预算里必然超时；WBC 只有
+    # 24 维、0.6 ms，必须每帧跑（它输出的是这一帧的力矩）。所以 MPC 起独立
+    # 线程，WBC 留在主回路。
+    MPC_HZ = 50.0
+    MPC_HORIZON = 12          # knot 数，dt×N = 0.24 s
+    MPC_DT = 0.02
+    # 计划过期判据（秒）。MPC 线程被 GC 或调度卡住超过这个时间，就退回重力
+    # 前馈并把 `_mpc_miss` 记上 —— 拿一份 0.2 s 前的力当现在的力，机身会被
+    # 已经消失的扰动继续推。
+    MPC_STALE = 0.2
+    # WBC 的关节力矩上限。**不能沿用 WRENCH_TAU_MAX=14**：那是给「位置伺服
+    # 为主 + 前馈为辅」配的；WBC 是力矩主力，双支撑小跑静态承重就要 17.2 N·m，
+    # 压到 14 会把正常承重削掉、机身直接塌（见 wbc.py 顶部）。20 留 3.7 给
+    # 叠在上面的那圈低刚度 PD。
+    WBC_TAU_MAX = 20.0
+    # 送 WBC 的关节速度低通时间常数（秒）。理由见 `_dq_lp`。
+    DQ_TAU = 0.02
+    # MPC 的代价权重。**这一层是外环的慢修正 + 预测前馈，不是快环。**
+    #
+    # 从「测到状态」到「力矩生效」有 20~50 ms（50 Hz 计划 + 5 ms 链路），
+    # 高度/姿态这种双积分被控对象的带宽上限只有 2 Hz 左右。把它当快环用
+    # （w_height 4e3、w_rpy 1e2）实测直接进极限环：高度峰峰 30~45 mm、
+    # roll 峰峰 45°、Fz 在 110~340 N 之间摆、Mx 每 80 ms 翻一次符号。
+    #
+    # 现在快环归 `_mpc_trim`（200 Hz，与 `_wrench_cmd` 同一套律），这里只留
+    # 低增益的慢修正 —— 它的主要作用是把「接下来 240 ms 要抬哪条腿」这件事
+    # 提前算进力里，外加防止 QP 因为代价全零而退化成「什么都不出力」。
+    MPC_W_HEIGHT = 1e2
+    MPC_W_RPY = 1e1
+    MPC_W_OMEGA = 5e-1
+    MPC_W_FORCE = 5e-3
+    # 交给 WBC 之前的 wrench 限幅（相对体重的倍数）。理由见 `_clamp_wrench`。
+    MPC_FZ_MAX = 1.6
+    MPC_FXY_MAX = 0.35
+    # WBC 里足端 PD 的笛卡尔刚度/阻尼。`wbc.py` 的默认值（3000 / 120）是按
+    # 「关节 kp 120」折算的，只对**摆动腿**成立 —— 摆动腿在空中，追轨迹就是
+    # 它的全部工作，刚度高一点没有副作用。
+    WBC_KP_FOOT = 3000.0
+    WBC_KD_FOOT = 120.0
+    # 支撑腿保留多少足端位置任务。**给 0**：支撑脚踩在地上、机身系的目标在
+    # 往后扫，机身没跟上时误差等于「机身落后了多少」，没有物理上限。实测
+    # 5 cm × 3000 = 150 m/s² 的加速度需求，QP 里唯一的天花板是 τ ≤ 20，于是
+    # 12 个关节每帧都顶在限幅上、WBC 退化成 bang-bang，机身被顶得乱跳、打滑
+    # 200%、roll 峰峰 50°。支撑腿的任务只有出力，位置交给地面。
+    WBC_STANCE_FOOT = 0.0
+    # WBC 的时序正则权重（x 靠近上一帧的解）。
+    #
+    # **不开这一项根本没有稳定解。** 同一个 wrench 在摩擦锥上有很多等价顶点
+    # 解，OSQP 逐帧跳着选：实测 Mx 每 80 ms 翻一次符号（±40 N·m）、τ 帧间差
+    # p95 36 N·m / 峰值 90，机身被这些台阶抖得 roll 峰峰 44°。开 1e3 之后
+    # 同一段测试 roll 降到 14.7°、τ 峰值 40；再加外层 `_slew_tau` 到 4.4°。
+    #
+    # 数值上没有更好的选择：约束是线性锥、解集是凸多面体，顶点解不唯一是结构
+    # 性的，不是求解器精度问题，只能靠正则挑一个连续的解。
+    WBC_W_SLEW = 1e4
 
     # ------------------------------------------------------------------
     # 基础几何
@@ -1401,6 +1481,24 @@ class Go2Controller:
         self._imu_ok = False
         # 偏航保持的参考角：起步时锁在当前角，之后按 yaw 指令积分往前推。
         self._yaw_ref = None
+        # --- 自研力路（gait.mode == "mpc"）的状态 ---
+        # mpc / wbc 惰性构造：构造一次要建 144×144 的 QP 结构，进步态时才建，
+        # 站着用 VMC 的时候一个字节都不占。
+        self.mpc = None
+        self.wbc = None
+        # MPC 在 50 Hz 独立线程里跑（见 `_mpc_worker`）。`_mpc_plan` 是它交给
+        # 200 Hz 回路的交接点，只在锁内读写。
+        self._mpc_th = None
+        self._mpc_stop = None
+        self._mpc_lock = threading.Lock()
+        self._mpc_plan = None
+        self._mpc_err = None
+        self._mpc_com = np.zeros(3)      # 整机质心（机体系），_ensure_mpc 里算
+        self._mpc_miss = 0               # 200 Hz 回路没拿到计划的帧数
+        self._dq_f = None                # 送 WBC 的关节速度（低通后），见 _dq_lp
+        self._dq_t = 0.0
+        self._mpc_yaw = None             # MPC 的参考航向（起步时锁住）
+        self._mpc_n = 0                  # MPC 累计求解次数，量实际频率用
         # 竖直阻尼的滤波状态：机身高度差分出来的竖直速度，以及上一帧的高度
         # 采样点。见 _gait_feet_publish 里的 dz_vdamp。
         self._vz_filt = 0.0
@@ -1725,6 +1823,11 @@ class Go2Controller:
         self._step_odom()
         self._update_kin_height()
         mode = self._mode
+        # 一离开步态就把 MPC 线程停掉。放在这里而不是 `hold()` 里：收步是从
+        # `_gait_tick` / `_vel_tick` 里直接切 `_mode` 的，根本不会走 `hold()`，
+        # 线程留着就会一直按最后一份参考解力，虽然没人用，但白烧 25% 的 CPU。
+        if mode != "gait" and self._mpc_th is not None:
+            self._mpc_stop_thread()
         if mode in ("hold", "pose"):
             # 站着不动、或者摆姿态，四条腿都是踩实的，权重一律 1。**必须每帧
             # 重置**：步态中途收步时，最后一帧可能有一条腿正处在摆动相（权重
@@ -1735,7 +1838,10 @@ class Go2Controller:
         if mode == "hold":
             # 站着不动也要给前馈 —— 真机上不给我前馈，站姿全靠 kp 的静差撑着，
             # 腿是软的、机身下沉、一推就走。
-            self._publish(self._hold_q, tau=self._tau_ff(self._hold_q))
+            if self.gait.mode == "mpc" and self._hold_q is not None:
+                self._mpc_stand_publish(self._hold_q)
+            else:
+                self._publish(self._hold_q, tau=self._tau_ff(self._hold_q))
         elif mode == "pose":
             self._pose_tick()
         elif mode == "gait":
@@ -1860,7 +1966,376 @@ class Go2Controller:
         self._h_prev, self._h_t = h, now
         return self._vz_filt
 
-    # 期望的机身合力 F（机体系，N）与绕质心的合力矩 M（N·m）。
+    # ==================================================================
+    # 自研力路：MPC（50 Hz 独立线程）+ WBC（活在 200 Hz 回路里）
+    # ==================================================================
+    #
+    # 为什么分两层、为什么偏偏这样分工：
+    #
+    # VMC 那一层每帧独立算一次「要多大的合力/合力矩」，然后不管三七二十一
+    # 按 Jᵀ 摊到四条腿上。它有三个结构性缺陷，靠调增益都补不上：
+    #
+    # 1. **没有预测**。机身这一帧低了 1 cm，它就补 15 N，下一帧到 0 了就撤。
+    #    而脚落地要 20 ms 才见效，于是补过头、撤过头，环一直在追自己的延迟。
+    # 2. **没有摩擦锥**。Jᵀ 摊出来的水平分量如果超过 μ·fz，地面给不出来，
+    #    腿就在地上滑；分配器并不知道这件事，还在按「给得出」算。
+    # 3. **没有腿的动力学**。τ = −Jᵀf 只有负载项，腿自重与摆动腿惯性全靠
+    #    kp 兜 —— 这就是 kp 停在 100 降不下去的直接原因。
+    #
+    # MPC 解决 1 和 2（horizon 内把力摊开、显式带摩擦锥），WBC 解决 3
+    # （τ = M·a + h − Jᵀ·f，把逆动力学算全）。
+    #
+    # 分工的分界线是**时间尺度**：MPC 的 horizon 240 ms、50 Hz 足够，而且它
+    # 一帧 4.9 ms，塞进 200 Hz 的 5 ms 预算里必然超时；WBC 24 维、0.6 ms，
+    # 输出就是这一帧的力矩，必须每帧跑。所以 MPC 起线程、WBC 留主回路。
+    #
+    # 两条路都不改 `_gait_feet_publish` 里相位/落脚点那一段：步态是上层，
+    # 力路是下层，混在一起就没法做 A/B。
+
+    # 惰性构造 MPC / WBC。第一次进 mpc 模式时花这一笔，之后一直复用。
+    def _ensure_mpc(self):
+        if self.mpc is not None:
+            return
+        from .model import whole_body_com, whole_body_inertia
+        from .mpc import SRBDMPC
+        from .wbc import LEGS as WBC_LEGS
+        from .wbc import WBC
+
+        # **腿序断言**。WBC 的 τ 是 12 维向量、直接进 motor_cmd，顺序错了就是
+        # 四条腿互相接错；而 `wbc.LEGS` 与 `CTRL_LEGS` 分处两个模块，谁改了
+        # 另一边都不会报错，只会跑起来就翻。第一次构造就把这件事掐死。
+        if tuple(WBC_LEGS) != tuple(CTRL_LEGS):
+            raise RuntimeError(f"腿序不一致：wbc.LEGS={WBC_LEGS} "
+                               f"controller.CTRL_LEGS={CTRL_LEGS}")
+
+        q_stand = self.stand_joint_target()
+        self._mpc_com = whole_body_com(q_stand)
+        self.mpc = SRBDMPC(mass=self.BODY_MASS,
+                           inertia=whole_body_inertia(q_stand),
+                           com_body=self._mpc_com,
+                           mu=self.WRENCH_MU, fz_max=self.WRENCH_FZ_MAX,
+                           horizon=self.MPC_HORIZON, dt=self.MPC_DT,
+                           # 水平速度**不闭环**，见 mpc.py 里 Q 的那段：速度
+                           # 环留在外层步态（speed_loop 调步幅），两层同时
+                           # 管同一个自由度会互相抢。
+                           w_vxy=0.0,
+                           w_height=self.MPC_W_HEIGHT,
+                           w_rpy=self.MPC_W_RPY,
+                           w_omega=self.MPC_W_OMEGA,
+                           w_force=self.MPC_W_FORCE)
+        self.wbc = WBC(mu=self.WRENCH_MU, fz_max=self.WRENCH_FZ_MAX,
+                       tau_max=self.WBC_TAU_MAX, com=self._mpc_com,
+                       kp_foot=self.WBC_KP_FOOT, kd_foot=self.WBC_KD_FOOT,
+                       stance_foot=self.WBC_STANCE_FOOT,
+                       w_slew=self.WBC_W_SLEW)
+
+    # 启停 MPC 线程。stop 不阻塞：worker 最多 5 ms 就自己退出，在 200 Hz
+    # 回路里 join 等于把这一帧的力矩拖后 1 秒。
+    def _mpc_start(self):
+        self._ensure_mpc()
+        if self._mpc_th is not None and self._mpc_th.is_alive():
+            return
+        self._mpc_stop = threading.Event()
+        self._mpc_th = threading.Thread(target=self._mpc_worker,
+                                        args=(self._mpc_stop,),
+                                        name="go2-mpc", daemon=True)
+        self._mpc_th.start()
+
+    def _mpc_stop_thread(self):
+        if self._mpc_stop is not None:
+            self._mpc_stop.set()
+        self._mpc_stop = None
+        self._mpc_th = None
+        with self._mpc_lock:
+            self._mpc_plan = None
+
+    # MPC 线程主体。周期靠绝对时刻累加，不靠 sleep(period)：后者会把求解
+    # 耗时也加进去，实际频率变成 1/(period+5ms) = 40 Hz，horizon 就越算越偏。
+    def _mpc_worker(self, stop):
+        period = 1.0 / self.MPC_HZ
+        nxt = time.perf_counter() + period
+        while not stop.is_set():
+            try:
+                plan = self._mpc_solve_once()
+                self._mpc_n += 1
+                if plan is not None:
+                    with self._mpc_lock:
+                        self._mpc_plan = plan
+                        self._mpc_err = None
+            except Exception as e:                     # noqa: BLE001
+                # 线程里抛异常会静默死掉（daemon 线程没人收尸），200 Hz 回路
+                # 只能看到「计划一直是旧的」。把异常存下来，让回路那边报。
+                with self._mpc_lock:
+                    self._mpc_err = f"{type(e).__name__}: {e}"
+            nxt += period
+            d = nxt - time.perf_counter()
+            if d > 0:
+                time.sleep(d)
+            else:
+                nxt = time.perf_counter()               # 追不上就重新对齐
+
+    # 采一帧状态、解一次 MPC，产出一份交给 200 Hz 回路的计划。
+    #
+    # 两份都拿不到就返回 None（还没连上、或者不在步态里）—— 回路那边据此
+    # 退回重力前馈，不会把「上一段跑剩的力」继续发出去。
+    def _mpc_solve_once(self):
+        from .mpc import LEGS as MPC_LEGS
+        from .mpc import SRBDRef, SRBDState, contact_from_gait
+
+        g = self._gait
+        q = None if self.q is None else self.q.copy()
+        if g is None or q is None or not self.rpy:
+            return None
+        rpy = np.array([float(self.rpy[0]), float(self.rpy[1]),
+                        float(self.rpy[2])])
+        h = self.body_height()
+        if h is None:
+            return None
+
+        R = np.array(_rpy_to_R(*rpy), dtype=float)
+        com_w = R @ self._mpc_com
+        # 质心位置（世界系）。x/y 在 MPC 的代价里权重是 0（走多远是步态的事），
+        # 只有 z 参与高度闭环，所以 x/y 给个粗值就够 —— 但**不能不给**：它还是
+        # 参考状态里的一维，给 0 会让 `e` 里带一个巨大的常数。
+        p = np.array([0.0, 0.0, h]) + com_w
+        if self.pos is not None:
+            p[0], p[1] = float(self.pos[0]), float(self.pos[1])
+        bv = self.body_velocity()
+        v = np.zeros(3) if bv is None else R @ np.array(bv, dtype=float)
+        # 陀螺是机体系的，而 MPC 的模型写的是 ṙpy = ω（小角近似），所以直接用
+        # 机体系角速度、不再转到世界系 —— 转过去反而和「Euler 角导数」差一个
+        # 1/cos(pitch) 的因子。
+        omega = (np.zeros(3) if not self.gyro
+                 else np.array(self.gyro, dtype=float))
+        st = SRBDState(p=p, v=v, rpy=rpy, omega=omega)
+
+        if g.get("stream"):
+            vx, vy, yaw_cmd = (float(x) for x in g["vel"])
+        else:
+            vx, vy, yaw_cmd = (float(g["vx"]), float(g["vy"]),
+                               float(g["yaw"]))
+        z_des = (self._h_des if self._h_des is not None
+                 else FOOT_RADIUS - self.gait.neutral[CTRL_LEGS[0]][2])
+        # 参考高度是**质心**高度，不是机身高度。差一个 R·com 的 z 分量
+        # （站姿约 −2 cm），不补的话高度环会一直认为机身低了两厘米、持续
+        # 多加 30 N。
+        ref = SRBDRef(vx=vx, vy=vy, yaw_rate=yaw_cmd,
+                      height=z_des + float(com_w[2]))
+
+        # 参考航向：起步时锁在当前角，之后按 yaw 指令积分。**不能用实测航向
+        # 当参考** —— 那样误差恒为 0，机身被地面拽着转也没人管（实测 6 秒
+        # 漂 −7°）。这和 `_wrench_cmd` 里 `_yaw_ref` 的逻辑是同一套。
+        if self._mpc_yaw is None:
+            self._mpc_yaw = float(rpy[2])
+        else:
+            self._mpc_yaw += yaw_cmd * self.mpc.dt
+
+        feet = {}
+        for i, leg in enumerate(CTRL_LEGS):
+            feet[leg] = self.fk_leg(leg, q[3 * i:3 * i + 3])
+        tg = float(g.get("t_acc", 0.0)) - float(g.get("ramp", 0.0))
+        contacts = contact_from_gait(self.gait, tg, self.mpc.N, self.mpc.dt)
+
+        sol = self.mpc.solve(st, ref, feet, contacts, yaw_ref=self._mpc_yaw)
+        F, M = sol.wrench_body()
+        if not (np.isfinite(F).all() and np.isfinite(M).all()):
+            raise RuntimeError("MPC 的 wrench 非有限值")
+        # 头一个 knot 的逐腿力，转回机体系 —— WBC 里力的变量是机体系的。
+        # 它是 WBC 的「力分配正则」目标：同样能满足 6 维 wrench，腿往内夹
+        # 还是往外撑由这一项定。
+        force = {name: sol.R.T @ sol.forces[0][i]
+                 for i, name in enumerate(MPC_LEGS)}
+        return dict(F=F, M=M, force=force, t=time.perf_counter(),
+                    n_contact=int(contacts[0].sum()), info=sol.info)
+
+    # 送进 WBC 之前把关节速度滤一下。
+    #
+    # 真机的 `dq` 是编码器差分出来的，1σ 有 0.15 rad/s（仿真桥里同样加了这一
+    # 条，见 `unitree_sdk2py_bridge.PublishLowState`）。VMC 那边 `kd` 只有 1.5，
+    # 乘上去是 0.2 N·m，看不出来；WBC 的 `kd_foot` 是 120（它在做「足端笛卡尔
+    # 空间」的阻尼，不是关节空间），同一个噪声乘上去就是 18 m/s² 的任务加速度，
+    # 经 M 变成每秒 1~2 N·m 的力矩抖动 —— 站着不动都在抖。
+    #
+    # 所以这一层不是「额外加的滤波」，是把 WBC 的输入恢复到和 `kd` 同一个噪声
+    # 水平：低通 20 ms，转折 8 Hz，比摆动腿最快的运动（2~3 Hz）高得多。
+    def _dq_lp(self) -> np.ndarray:
+        if self.dq is None:
+            return np.zeros(NUM_MOTOR)
+        now = time.perf_counter()
+        dt = now - self._dq_t
+        self._dq_t = now
+        # 同一帧被调两次（stand 与 gait 不会同时走，但保险）就给缓存
+        if not (0.0 < dt < 0.05):
+            if self._dq_f is None:
+                self._dq_f = self.dq.copy()
+            return self._dq_f
+        if self._dq_f is None:
+            self._dq_f = self.dq.copy()
+        else:
+            k = dt / (self.DQ_TAU + dt)
+            self._dq_f += k * (self.dq - self._dq_f)
+        return self._dq_f
+
+    # 站姿（`hold`）走 WBC：四个脚全着地、只要求「顶住体重」。
+    #
+    # 为什么站姿也要走这一层：`hold` 原来发的是 `gravity_tau` —— 那个函数只
+    # 算负载项 Jᵀf，没有腿自重（站姿膝力矩 0.27 N·m，是负载的 4%），也没有
+    # 关节加速度项。所以站着的时候机身高度其实靠 kp 的静差撑着：kp 一降，
+    # 机身就下沉，这是「kp 停在 100 降不下去」的另一半原因。
+    #
+    # **不能抛异常**：这条路径在 200 Hz 回路里，抛一次整条线程就死。出错就
+    # 退回重力前馈 —— 那本来就是没有 WBC 时的站姿，能站住。
+    def _mpc_stand_publish(self, q_out):
+        try:
+            self._ensure_mpc()
+            q_meas = self.q if self.q is not None else q_out
+            dq_meas = self._dq_lp()
+            feet = {leg: np.asarray(self.fk_leg(leg, q_out[3 * i:3 * i + 3]),
+                                    dtype=float)
+                    for i, leg in enumerate(CTRL_LEGS)}
+            from .wbc import WBCTarget
+
+            # 力的分配目标是「四腿均分体重」。不光是物理上合理 —— 它在数值上
+            # 也必需：不给 force 目标时，f 那 12 维只剩 w_force=1e-2 的正则撑着，
+            # 而 τ 那 12 维只剩 w_tau=1e-4，H 的条件数跨到 1e12 量级，OSQP 每次
+            # 都要迭代到上限（实测站姿一帧 3.7 ms，给了均分之后 0.4 ms）。
+            mg4 = self.BODY_MASS * self.GRAVITY / 4.0
+            feed = {leg: np.array([0.0, 0.0, mg4]) for leg in CTRL_LEGS}
+            tgt = WBCTarget(feet=feet,
+                            feet_vel={leg: np.zeros(3) for leg in CTRL_LEGS},
+                            weights={leg: 1.0 for leg in CTRL_LEGS},
+                            F=np.array([0.0, 0.0, self.BODY_MASS * self.GRAVITY]),
+                            M=np.zeros(3), force=feed)
+            res = self.wbc.solve(q_meas, dq_meas, tgt)
+            self._publish(q_out, tau=res.tau)
+        except Exception as e:                          # noqa: BLE001
+            with self._mpc_lock:
+                self._mpc_err = f"{type(e).__name__}: {e}"
+            self._mpc_miss += 1
+            self._publish(q_out, tau=self._tau_ff(q_out))
+
+    # 把 MPC 给的 wrench 限到腿实际能给出来的范围。
+    #
+    # MPC 的 QP 只在**它自己假设的接触序列**上满足 fz_max / 摩擦锥，而那个
+    # 序列是按相位预测的、而且允许四脚同时着地。真实权重可能是两条腿，可行
+    # 的合力矩就小得多。实测 MPC 输出 Mx ±60 N·m，而两条腿的几何上限是
+    # 22 N·m（`WRENCH_M_MAX` 取 14 是留余量的值）。
+    #
+    # 追一个不存在的力矩，WBC 只会把旋转那一项（权重还是平移的 10 倍）当成
+    # 硬约束，牺牲摩擦锥和足端任务去凑，四条腿互相拉扯、机身被拧得乱滚。
+    # VMC 那一路一直有这个限幅，接 MPC 时漏掉了。
+    def _clamp_wrench(self, F, M):
+        mg = self.BODY_MASS * self.GRAVITY
+        F = np.asarray(F, dtype=float).copy()
+        M = np.asarray(M, dtype=float).copy()
+        M[0] = _clamp(float(M[0]), -self.WRENCH_M_MAX, self.WRENCH_M_MAX)
+        M[1] = _clamp(float(M[1]), -self.WRENCH_M_MAX, self.WRENCH_M_MAX)
+        M[2] = _clamp(float(M[2]), -2.0 * self.WRENCH_M_MAX,
+                      2.0 * self.WRENCH_M_MAX)
+        F[2] = _clamp(float(F[2]), 0.2 * mg, self.MPC_FZ_MAX * mg)
+        lim = math.hypot(float(F[0]), float(F[1]))
+        if lim > self.MPC_FXY_MAX * mg:
+            s = self.MPC_FXY_MAX * mg / lim
+            F[0], F[1] = F[0] * s, F[1] * s
+        return F, M
+
+    # 200 Hz 快环给出的 wrench 修正量。
+    #
+    # **高度与姿态的快环必须留在 200 Hz。** 实测（仿真，walk 0.2 m/s）：
+    # 让 MPC 自己在 50 Hz 上闭这两路，无论权重怎么给（w_rpy 从 100 扫到 1、
+    # w_height 从 2e2 扫到 2e3）roll 峰峰都停在 43~47°，Mx 每 80 ms 翻一次
+    # 符号（±40 N·m），高度误差 +15 mm 时 Fz 反而给到 217 N（mg = 149）。
+    # 原因是延迟：50 Hz 计划 + 5 ms 链路 = 20~50 ms，这两个环的带宽被延迟
+    # 卡死在 2 Hz 以下，再往上调就是极限环。
+    #
+    # 同样两条反馈律放到 200 Hz（就是 `_wrench_cmd` 那套）roll 是 3.1°。
+    # 所以分工改成：**200 Hz 负责「现在偏了，纠回来」**，MPC 负责
+    # **「接下来 240 ms 里要抬哪条腿，力该怎么挪」** —— 后者是预测，前者是
+    # 反馈，本来就不该由同一个环兼任。
+    def _mpc_trim(self, vx, vy, yaw, a):
+        wr = self._wrench_cmd(vx, vy, yaw, a)
+        if wr is None:
+            return np.zeros(3), np.zeros(3)
+        F, M = wr
+        mg = self.BODY_MASS * self.GRAVITY
+        # `_wrench_cmd` 的 Fz 里含承重 mg，MPC 那份也含 —— 只取超出承重的
+        # 那一部分作为修正量，否则体重算两遍。
+        return (np.array([F[0], F[1], F[2] - mg], dtype=float),
+                np.asarray(M, dtype=float))
+
+    # 200 Hz 回路的 mpc 分支：拿最新计划 + 这一帧的足端目标，解 WBC 下发力矩。
+    #
+    # **无论出什么错都要发一帧合法的力矩**（退回重力前馈）。这条回路是
+    # RecurrentThread，抛出去就等于整条线程死掉，狗当场瘫。
+    def _mpc_feet_publish(self, g, q_out, feet_tgt, feet_vel, a, vx, vy, yaw):
+        tau = None
+        try:
+            if self._mpc_th is None or not self._mpc_th.is_alive():
+                self._mpc_start()
+            with self._mpc_lock:
+                plan, err = self._mpc_plan, self._mpc_err
+            age = 1e9 if plan is None else time.perf_counter() - plan["t"]
+            if a < 0.05 or age > self.MPC_STALE:
+                # 起停段（a 还没铺开）或计划过期：退回重力前馈。
+                self._mpc_miss += 1
+                self._publish(q_out, tau=self._tau_ff(q_out))
+                return
+            from .wbc import WBCTarget
+
+            q_meas = self.q if self.q is not None else q_out
+            dq_meas = self._dq_lp()
+            # 合成顺序：MPC 的前馈 + 200 Hz 的修正，**最后一起限幅**。先限再加
+            # 会把修正量整个丢掉（MPC 那份常年贴着上限，加完再限就是原地不动）。
+            dF, dM = self._mpc_trim(vx, vy, yaw, a)
+            F, M = self._clamp_wrench(np.asarray(plan["F"], float) + dF,
+                                      np.asarray(plan["M"], float) + dM)
+            tgt = WBCTarget(feet=feet_tgt, feet_vel=feet_vel,
+                            weights=dict(self._stance_w),
+                            F=F, M=M, force=plan["force"])
+            res = self.wbc.solve(q_meas, dq_meas, tgt)
+            # 和 VMC 那一路同样过一道时序滤波。QP 的解在摩擦锥的顶点之间会
+            # 逐帧跳（同一个 wrench 有多个等价顶点解），实测帧间差 p95 36 N·m、
+            # 峰值 90 —— 减速器感受到的就是每 5 ms 一次的力矩台阶，机身被抖得
+            # 乱滚。WBC 里的 `w_slew` 在内层压同一件事，这里是外层兜底。
+            tau = self._slew_tau(res.tau)
+        except Exception as e:                          # noqa: BLE001
+            with self._mpc_lock:
+                self._mpc_err = f"{type(e).__name__}: {e}"
+            self._mpc_miss += 1
+            self._publish(q_out, tau=self._tau_ff(q_out))
+            return
+
+        # 支撑腿降 kp：理由和 VMC 那一路完全一样（位置伺服会把脚钉死在轨迹上，
+        # 力矩加进去只是「钉得更紧」）。WBC 已经把逆动力学算全了，这里降得
+        # 更狠也不怕 —— kp 到 40 还能站住就是 Step 3 的验收项。
+        kp = self.kp.copy()
+        for i, leg in enumerate(CTRL_LEGS):
+            w = float(self._stance_w.get(leg, 0.0))
+            if w > 1e-3:
+                kp[3 * i:3 * i + 3] *= (1.0 - w * (1.0 - self.wrench_kp_stance)
+                                        * self.gait.wrench)
+        self._publish(q_out, kp=kp, tau=tau)
+
+    # 自研力路的诊断读数：MPC/WBC 各自的耗时与失败帧数。
+    def mpc_stats(self) -> dict:
+        out = dict(legs=len(CTRL_LEGS), miss=self._mpc_miss, err=self._mpc_err,
+                   n=self._mpc_n,
+                   alive=bool(self._mpc_th is not None
+                              and self._mpc_th.is_alive()))
+        if self.mpc is not None:
+            out["mpc"] = self.mpc.stats()
+        if self.wbc is not None:
+            out["wbc"] = self.wbc.stats()
+        with self._mpc_lock:
+            p = self._mpc_plan
+        if p is not None:
+            out["age_ms"] = 1e3 * (time.perf_counter() - p["t"])
+            out["n_contact"] = p["n_contact"]
+            out["F"] = [round(float(x), 1) for x in p["F"]]
+            out["M"] = [round(float(x), 2) for x in p["M"]]
+        return out
+
+
     #
     # `a` 是步态幅度（0~1）。起停时它把反馈项一起收掉，避免站着的时候
     # 姿态反馈还在推脚 —— 那时候脚在地上，推了就是滑。
@@ -2050,6 +2525,7 @@ class Go2Controller:
         if self._thread is not None:
             self._thread.Wait(1.0)
             self._thread = None
+        self._mpc_stop_thread()
         self.damping()
         # 阻尼发完、狗已经趴稳，再把运控交还官方。顺序不能反：先交还的话
         # mcf 接手时我们还在发指令，又是一轮双源冲突。
@@ -2254,6 +2730,7 @@ class Go2Controller:
                  stream=False)
         self._gait = g
         self.peak_z = 0.0
+        self._mpc_yaw = None
         self._t0 = g["t0"]
         self._ensure_loop()
         self._mode = "gait"
@@ -2383,7 +2860,10 @@ class Go2Controller:
             return
         if g["a"] <= 0.0:
             # 速度还没起作用，先维持站姿，避免零幅度步态抖动
-            self._publish(g["q_stand"])
+            if self.gait.mode == "mpc":
+                self._mpc_stand_publish(g["q_stand"])
+            else:
+                self._publish(g["q_stand"])
             return
 
         self._gait_feet_publish(g, tg, g["a"], *g["vel"])
@@ -2537,6 +3017,14 @@ class Go2Controller:
         R_lean = None
         if gp.lean and abs(yaw) > 1e-3:
             R_lean = _rpy_to_R(gp.lean * yaw * a, 0.0, 0.0)
+        # 自研力路要的两份东西：足端在机体系的目标位置与目标速度。
+        # 位置就是下面 IK 的输入（连同姿态修正、压地、落脚点前移一起带上），
+        # 速度取 `foot_target` 的导数乘幅度 —— 支撑相的腿本来就在以 −v 后扫，
+        # 摆动相则沿着那条四次多项式走。只给位置不给速度的话，WBC 里那个
+        # kd_foot 会把「轨迹本来就该有的速度」当成误差去纠，摆动腿起步那
+        # 一下会明显拖一拍。
+        feet_tgt: dict = {}
+        feet_vel: dict = {}
         for i, leg in enumerate(CTRL_LEGS):
             h_body = float(self.body_height() or 0.0)
             p_traj = self.foot_target(leg, tg, evx, evy, yaw)
@@ -2638,6 +3126,9 @@ class Go2Controller:
             if cp is not None:
                 x, y, z = p
                 p = (cp * x - sp * z, y, sp * x + cp * z)
+            feet_tgt[leg] = np.array(p, dtype=float)
+            fv = self.foot_velocity(leg, tg, evx, evy, yaw)
+            feet_vel[leg] = np.array([a * fv[0], a * fv[1], 0.0])
             r = self.ik_leg(leg, p)
             g["n"] += 1
             if r.ok:
@@ -2645,6 +3136,9 @@ class Go2Controller:
             else:
                 g["fail"] += 1
         q_out = g["last"]
+        if gp.mode == "mpc":
+            self._mpc_feet_publish(g, q_out, feet_tgt, feet_vel, a, vx, vy, yaw)
+            return
         wr = self._wrench_cmd(vx, vy, yaw, a)
         if wr is None:
             self._publish(q_out, tau=self._tau_ff(q_out))
@@ -2691,6 +3185,8 @@ class Go2Controller:
         v0 = list(self._last_vel if vel0 is None else vel0)
         moving = any(abs(v) > 1e-3 for v in v0)
         self._pit_filt = self._rol_filt = self._v_filt = 0.0
+        # 参考航向重新锁：上一段跑的残留值会让第一帧就要把机身掰回去。
+        self._mpc_yaw = None
         self._gait = dict(stream=True, ramp=ramp, gait_ramp=gait_ramp,
                           stop_ramp=0.45, t0=time.time(), last_t=0.0,
                           q_init=self.q.copy(), q_stand=q_stand,
@@ -2709,6 +3205,12 @@ class Go2Controller:
         # 高度环的目标也取这一刻的实测值，别去追模型算出来的 height。
         self._h_des = self.body_height() or self._h_des
         self._mode = "gait"
+        # MPC / WBC **在进模式时就构造**，不在 200 Hz 回路里现场造。构造要编译
+        # 两份 QP（12N 维的 MPC、24 维的 WBC），实测第一帧在回路里花掉 320 ms
+        # —— 那一帧的力矩晚 0.3 秒发出去，狗已经趴下了。线程仍然是惰性启动的
+        # （`_mpc_start`），那时构造已经完成，只是起一个 thread 对象。
+        if self.gait.mode == "mpc":
+            self._ensure_mpc()
         self._ensure_loop()
 
     # 只改目标速度，不改相位；实际加速度由 200 Hz 回路限住。
