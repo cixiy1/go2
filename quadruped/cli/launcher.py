@@ -29,10 +29,17 @@ import subprocess
 import sys
 import unicodedata
 
-from quadruped.control.virtual.protocol import check_module, normalize_group
-
 _HERE = os.path.dirname(os.path.abspath(__file__))          # quadruped/cli
 ROOT = os.path.dirname(os.path.dirname(_HERE))              # 项目根
+
+# `python quadruped/cli/launcher.py` 时 sys.path[0] 是 `quadruped/cli`，项目根
+# 不在里面，下面那句 `import quadruped` 直接 ModuleNotFoundError。`main.py` 与
+# `test/` 下几个脚本都有同样的引导，这里补上，两个入口都能直接跑。
+if __package__ in (None, ""):
+    sys.path.insert(0, ROOT)
+
+from quadruped.control.virtual.protocol import check_module, normalize_group  # noqa: E402
+
 CONTROL_DIR = os.path.join(os.path.dirname(_HERE), "control")
 
 
