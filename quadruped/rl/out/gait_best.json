@@ -1,0 +1,55 @@
+{
+  "spec": {
+    "period": 0.4503704255459291,
+    "duty": 0.7375709557180348,
+    "swing_height": 0.059782603915099514,
+    "stride_max": 0.07186479784844249,
+    "stance_spread": 0.0,
+    "stride_gain": 1.0,
+    "speed_loop": 0.0,
+    "stance_sink": 0.0012748596117446273
+  },
+  "source": "gait_mix_0.25_preload.json",
+  "cfg": {
+    "vx": 0.25,
+    "seconds": 6.0,
+    "slope": 0.0,
+    "seed": 0,
+    "vx_list": [
+      0.15,
+      0.25,
+      0.3
+    ],
+    "slope_list": [
+      0.0,
+      5.0
+    ],
+    "lock": {
+      "stride_gain": 1.0
+    },
+    "kp": 100.0,
+    "kd": 3.0,
+    "motor_bw": 40.0,
+    "w_speed": 0.35,
+    "w_stab": 0.45
+  },
+  "score": 0.7037192886611972,
+  "requires": {
+    "kd": 3.0,
+    "kp": 100.0,
+    "motor_bw": 40.0,
+    "speed_range": [
+      0.0,
+      0.4
+    ]
+  },
+  "trained_speeds": [
+    0.15,
+    0.25,
+    0.3
+  ],
+  "trained_slopes": [
+    0.0,
+    5.0
+  ]
+}
