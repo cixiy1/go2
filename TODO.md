@@ -14,12 +14,17 @@
   - 顺带发现：`gravity_tau` 一直没算腿自重（站姿膝力矩 −0.27 N·m，是负载项的 4%），WBC 里要补上
   - 惯量张量必须 R·diag·Rᵀ 转回连杆系 —— XML 里机身那三个数绕 y 转了 90°，照抄会把偏航惯量当横滚
 
-- [ ] **1 SRBD-MPC**（`quadruped/control/mpc.py`）
-  - 状态 12 维（p, v, rpy, ω），决策变量 = 每个 knot 的四足三维地面反力
+- [x] **1 SRBD-MPC**（不碰机器）— 2026-11-11 完成，`quadruped/control/mpc.py`
+  - 状态 12 维（p, v, rpy, ω），决策变量 = 每个 knot 的四足三维地面反力，condensed QP（144 维 @ N=12）
   - 接触序列直接取现有步态相位（period 0.5 / duty 0.5），不另做接触规划
-  - 约束：fz ≥ 0、|fx,fy| ≤ μ·fz、fz ≤ FZ_MAX；代价：速度/高度/姿态跟踪 + 力正则
-  - 依赖：`uv add osqp`
-  - 验收（离线跑，无机器人）：Σfz = mg ± 0.1%、fz ≥ 0、单次求解 p95 < 3 ms、与 MuJoCo 单刚体一步积分对拍
+  - 验收（`test/mpc_check.py` 全过）：Σfz 比 mg 高 0.063%（要求 ±0.1%）、fz 最小 −0.05 mN、p95 1.05 ms（要求 < 3 ms）、与 MuJoCo 对拍 1.1e-12 m/s²
+  - 闭环 2 s 自积分：vx 0.329（指令 0.3）、高度 0.270 不漂、roll 峰 0.4° pitch 峰 0.8°
+  - 耗时分解：OSQP 0.38 ms / 25 迭代，Python 侧矩阵组装 0.40 ms
+  - **摩擦锥必须按 μ/√2 内接**。四棱锥 `±fx ≤ μfz`、`±fy ≤ μfz` 的棱角伸到 √2·μ·fz，直接用 μ 等于把摩擦系数偷放大 41%（实测解出 fx = fy = 132 N、合力 187 N）
+  - **终端代价 ×20 不能省**。horizon 末端不加权，求解器就用「让机身自己在末端掉下去」省钱，首帧 Σfz 会高 0.18%
+  - **与 MuJoCo 对拍别用 `mj_applyFT`**：它的 `point` 是相对**质心**的世界点；改用站点雅可比 `Σ Jᵢᵀfᵢ` + `mj_fullM` + `mj_rne(flg_acc=0)`，无歧义
+  - 对拍第二个坑：MJCF 只写 `diaginertia` 等于换了张量。整机 I_xz = −0.0165（横滚惯量的 10%），必须写 `fullinertia`，否则差 4.3 m/s²
+  - 顺带一条环境问题：numpy 2.2 + macOS Accelerate 会把 BLAS 遗留的浮点标志报成 `divide by zero encountered in matmul`，全正数相乘也报，是假的（`_condense` 里已用 `errstate` 圈住，真 NaN 靠解出的力拦）
 
 - [ ] **2 WBC QP**（`quadruped/control/wbc.py`）
   - 决策变量：12 关节 τ
