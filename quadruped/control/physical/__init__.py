@@ -8,7 +8,7 @@
 
 对仿真也能用的代码不要放这里（键盘遥控就在 `virtual/`，它换网卡就能上真机）。
 约定同 `virtual/`：模块级 `META` 字典 + 可独立运行，入口是项目根 `main.py`，
-`env` 写 `"physical"`。
+`group` 写 `"physical"`。
 
 `test/real_diag.py`（真机抖动诊断）和 `test/telemetry.py`（只读遥测）是候选，
 等确认要长期留着再移进来 —— 它们现在算一次性排查工具。

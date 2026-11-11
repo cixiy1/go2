@@ -48,13 +48,14 @@ quadruped/
 │   ├── controller.py       3015 行  低层：运动学、IK、步态、力矩、200 Hz 回路
 │   ├── high_level.py        837 行  高层：动作编排，跳跃在这里
 │   ├── virtual/                     虚拟控制器：对仿真器（lo0）
-│   │   └── keyboard.py     1341 行  键盘遥控，两个后端
-│   └── physical/                    物理控制器：对真机（en5），暂时留空
+│   │   └── keyboard.py              键盘遥控，两个后端
+│   ├── physical/                    物理控制器：对真机（en5），暂时留空
+│   └── embodied/                    具身智能控制器：决策层，暂时留空
 ├── robot/
 │   └── body.py              314 行  本体层，唯一对外入口
 ├── cli/
 │   ├── main.py              236 行  命令行入口（stand / trot / act …）
-│   └── launcher.py          281 行  控制器菜单与进程管理
+│   └── launcher.py          286 行  控制器菜单与进程管理
 └── sim/                             仿真资产（不是 Python 包）
     ├── run_sim.sh                   mjpython 外壳
     └── unitree_mujoco/              官方仿真器（子模块，未改动）

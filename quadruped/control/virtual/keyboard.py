@@ -88,13 +88,14 @@ from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
 from quadruped.robot.body import Go2Robot
 
 # ---- 入口注册信息 ---------------------------------------------------------
-# 项目根 main.py 的启动器会扫 quadruped/control/{virtual,physical}/*.py，
+# 项目根 main.py 的启动器会扫 quadruped/control/{virtual,physical,embodied}/*.py，
 # 导入模块读这个字典来列菜单。加一个新控制器 = 加一个带 META 的文件。
-#   owns_cmd   会往 rt/lowcmd 发指令（两个同时选会互相覆盖，启动器会拦）
+#   group      所在目录名，菜单按它分组
+#   owns_cmd   最终会让狗动（多个同时选会互相覆盖，启动器会拦）
 #   owns_keys  接管键盘（两个同时选抢按键，启动器也会拦）
 META = dict(
     title="键盘遥控",
-    env="virtual",
+    group="virtual",
     desc="w/a/s/d/q/e 边走边转，空格跳跃、Ctrl 蹲起，1~9 调速度档",
     owns_cmd=True,
     owns_keys=True,

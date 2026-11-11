@@ -6,7 +6,7 @@
 
 每个模块都是一个**能独立运行**的控制器，并在模块级暴露 `META` 字典：
 
-    META = dict(title="显示名", env="virtual", desc="一句话说明",
+    META = dict(title="显示名", group="virtual", desc="一句话说明",
                 owns_cmd=True, owns_keys=False)
 
 项目根 `main.py` 扫描本目录，读 `META` 列菜单，选中后以

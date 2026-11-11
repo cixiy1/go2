@@ -1,9 +1,13 @@
 """项目入口的启动器：先问你要跑哪个控制器，再把它拉起来。
 
-控制器按运行环境分两个目录放着：
+控制器按分组放在 `quadruped/control/` 下的三个目录里：
 
-    quadruped/control/virtual/    对仿真器（lo0）
-    quadruped/control/physical/   对真机（en5）
+    virtual/     虚拟 · 对仿真器（lo0）
+    physical/    物理 · 对真机（en5）
+    embodied/    具身智能 · 决策层，输出动作而不是关节指令
+
+前两组按**运行环境**分，第三组按**分层**分：具身智能控制器坐在高层之上，
+自己不碰 DDS 也不碰步态，仿真和真机用的是同一份。
 
 每个模块在模块级暴露一个 `META` 字典，本文件扫描目录、导入读 `META`、列成
 菜单。所以**加一个控制器就是加一个文件**，不用回来改这里。
@@ -30,10 +34,11 @@ _HERE = os.path.dirname(os.path.abspath(__file__))          # quadruped/cli
 ROOT = os.path.dirname(os.path.dirname(_HERE))              # 项目根
 CONTROL_DIR = os.path.join(os.path.dirname(_HERE), "control")
 
-# 目录 → 菜单标题。顺序就是菜单顺序。
-ENVS = (
+# 目录名 → 菜单标题。顺序就是菜单顺序。
+GROUPS = (
     ("virtual", "虚拟 · 仿真器 lo0"),
     ("physical", "物理 · 真机 en5"),
+    ("embodied", "具身智能 · 决策层（仿真/真机通用）"),
 )
 
 
@@ -49,8 +54,8 @@ def _pad(s: str, n: int) -> str:
 class Entry:
     """一个控制器。导入失败也留个条目，菜单里标出来，别假装它不存在。"""
 
-    def __init__(self, env, stem, module, meta=None, error=None):
-        self.env = env
+    def __init__(self, group, stem, module, meta=None, error=None):
+        self.group = group
         self.stem = stem
         self.module = module
         self.meta = meta or {}
@@ -78,28 +83,28 @@ class Entry:
 
 
 def discover() -> list[Entry]:
-    """扫两个目录，导入每个模块读 META。"""
+    """扫三个目录，导入每个模块读 META。"""
     found: list[Entry] = []
-    for env, _ in ENVS:
-        d = os.path.join(CONTROL_DIR, env)
+    for group, _ in GROUPS:
+        d = os.path.join(CONTROL_DIR, group)
         if not os.path.isdir(d):
             continue
         for fn in sorted(os.listdir(d)):
             if not fn.endswith(".py") or fn.startswith("_"):
                 continue
             stem = fn[:-3]
-            module = f"quadruped.control.{env}.{stem}"
+            module = f"quadruped.control.{group}.{stem}"
             try:
                 mod = importlib.import_module(module)
             except Exception as e:                    # noqa: BLE001 任何导入错误都不该挡住菜单
-                found.append(Entry(env, stem, module,
+                found.append(Entry(group, stem, module,
                                    error=f"{type(e).__name__}: {e}"))
                 continue
             meta = getattr(mod, "META", None)
             if meta is None:
                 # 没有 META 的模块不当控制器，静默跳过（比如辅助模块）。
                 continue
-            found.append(Entry(env, stem, module, meta=dict(meta)))
+            found.append(Entry(group, stem, module, meta=dict(meta)))
     return found
 
 
@@ -108,13 +113,13 @@ def render_menu(entries: list[Entry]) -> dict[int, Entry]:
     print("\nGo2 控制器\n")
     n = 0
     index: dict[int, Entry] = {}
-    for env, heading in ENVS:
+    for key, heading in GROUPS:
         print(f"  {heading}")
-        group = [e for e in entries if e.env == env]
-        if not group:
+        members = [e for e in entries if e.group == key]
+        if not members:
             print("    （还没有，留空占位）\n")
             continue
-        for e in group:
+        for e in members:
             n += 1
             index[n] = e
             if e.runnable:
