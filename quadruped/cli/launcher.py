@@ -29,6 +29,7 @@ import importlib
 import os
 import subprocess
 import sys
+import time
 import unicodedata
 
 _HERE = os.path.dirname(os.path.abspath(__file__))          # quadruped/cli
@@ -231,9 +232,21 @@ def ask(groups: list[Group], entries: list[Entry]) -> list[Entry]:
 # （见 TODO.md Step 3）。默认开等于每次开机都踩在超时线上。
 
 ENVS = [
-    ("sim", "仿真", "直接锁 lo0 / domain 1，不问网口"),
+    ("sim-new", "仿真（一起起）", "先拉仿真器，就绪后接控制器"),
+    ("sim", "仿真（已在跑）", "直接锁 lo0 / domain 1"),
     ("real", "真机", "列网口让你选（en5 / USB 网卡都可能）"),
 ]
+
+# 每一档对应 (preset, 要不要先拉仿真器)。
+ENV_SPEC = {
+    "sim-new": ("sim", True),
+    "sim": ("sim", False),
+    "real": ("real", False),
+}
+
+# 仿真器起来到能收 lowstate 要多久。mjpython 解包 + 加载 scene.xml + 720 个
+# 三角形的地形，给 4 s 是留足余量；短了控制器会在 connect 的 3 s 超时里空等。
+SIM_BOOT = 4.0
 
 MOTIONS = [
     ("vmc", "关闭（VMC）", "单层反馈，回路 p95 5.8 ms"),
@@ -274,6 +287,46 @@ def run_sim() -> int:
     os.execv(script, [script])
 
 
+# 仿真器 + 控制器一起起：一条命令、一个终端。
+#
+# 两个都必须是独立进程：mjpython 是 GUI 外壳（GUI 得在主线程），而
+# `ChannelFactoryInitialize` 一个进程只能调一次，控制器也不能塞进本进程。
+# 所以这里起两个子进程，自己只当管理者：等仿真器就绪 → 起控制器 → 控制器
+# 退出或 Ctrl+C 时把仿真器收掉，不留孤儿窗口。
+SIM_SCRIPT = os.path.join(ROOT, "quadruped", "sim", "run_sim.sh")
+
+
+def run_with_sim(cmd: list[str], env: dict) -> int:
+    if not os.access(SIM_SCRIPT, os.X_OK):
+        print(f"找不到可执行的 {SIM_SCRIPT}")
+        return 2
+    print("起 MuJoCo 仿真器 …")
+    sys.stdout.flush()
+    sim = subprocess.Popen([SIM_SCRIPT], cwd=ROOT)
+    code = 1
+    try:
+        time.sleep(SIM_BOOT)
+        if sim.poll() is not None:
+            print(f"仿真器自己退了（返回码 {sim.returncode}），看上面的报错。")
+            return sim.returncode or 1
+        print(f"仿真器就绪（等了 {SIM_BOOT:.0f} s），接控制器\n")
+        sys.stdout.flush()
+        ctrl = subprocess.Popen(cmd, cwd=ROOT, env=env)
+        code = ctrl.wait()
+    except KeyboardInterrupt:
+        print("\n中断 …")
+        code = 130
+    finally:
+        if sim.poll() is None:
+            print("收仿真器 …")
+            sim.terminate()
+            try:
+                sim.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                sim.kill()
+    return code
+
+
 # 两个控制器同时占 lowcmd / 键盘，DDS 上会互相覆盖，先拦一下。
 def check_conflict(entries: list[Entry], assume_yes: bool) -> bool:
     problems = []
@@ -300,7 +353,8 @@ def check_conflict(entries: list[Entry], assume_yes: bool) -> bool:
 
 
 def launch(entries: list[Entry], extra: list[str], preset: str | None = None,
-           motion: str | None = None, assume_yes: bool = False) -> int:
+           motion: str | None = None, assume_yes: bool = False,
+           with_sim: bool = False) -> int:
     if not entries:
         return 1
     if extra and len(entries) > 1:
@@ -323,6 +377,13 @@ def launch(entries: list[Entry], extra: list[str], preset: str | None = None,
     print(f"\n环境 {preset or '默认'} / 运控 {motion or '默认'}")
     os.chdir(ROOT)                       # 让 `-m` 从项目根找包
     cmds = [[sys.executable, "-m", e.module] + cmd_extra for e in entries]
+
+    if with_sim:
+        # 一个仿真器只能带一个控制器：两个都往 rt/lowcmd 发，会互相覆盖。
+        if len(cmds) > 1:
+            print("一起起仿真器时只能选一个控制器。")
+            return 2
+        return run_with_sim(cmds[0], env)
 
     if len(cmds) == 1:
         # 单片：直接换掉自己。Ctrl+C 就是给控制器本身，信号路径最短。
@@ -378,6 +439,8 @@ def main(argv=None) -> int:
                     help="运控：vmc=关闭（单层反馈），mpc=开启（MPC+WBC 三层）")
     ap.add_argument("--sim", action="store_true",
                     help="只起 MuJoCo 仿真器（长驻 GUI，占住当前终端）")
+    ap.add_argument("--with-sim", action="store_true",
+                    help="连仿真器一起起：一个终端、一条命令，退出时一起收")
     ap.add_argument("--list", action="store_true", help="只列清单，不运行")
     ap.add_argument("--yes", "-y", action="store_true", help="冲突时不再问")
     args = ap.parse_args(head)
@@ -397,6 +460,7 @@ def main(argv=None) -> int:
     if args.controllers:
         # 直接点名：不再问，缺的用默认（仿真 / VMC）。
         preset, motion = args.preset or "sim", args.motion or "vmc"
+        with_sim = args.with_sim
         by_stem = {e.stem: e for e in entries}
         picked = []
         for name in args.controllers:
@@ -410,11 +474,20 @@ def main(argv=None) -> int:
             picked.append(e)
     else:
         # 交互：环境 → 运控 → 控制器，三段都问。命令行给过的就不再问。
-        preset = args.preset or _pick("环境", ENVS)
+        with_sim = args.with_sim
+        if args.preset is None:
+            preset, auto_sim = ENV_SPEC[_pick("环境", ENVS)]
+            with_sim = with_sim or auto_sim
+        else:
+            preset = args.preset
         motion = args.motion or _pick("运控", MOTIONS)
         picked = ask(groups, entries)
 
-    return launch(picked, extra, preset, motion, args.yes)
+    if with_sim and preset == "real":
+        print("真机不能一起起仿真器。")
+        return 2
+
+    return launch(picked, extra, preset, motion, args.yes, with_sim=with_sim)
 
 
 if __name__ == "__main__":
