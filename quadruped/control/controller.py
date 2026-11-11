@@ -99,13 +99,10 @@ from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_
 from unitree_sdk2py.utils.crc import CRC
 from unitree_sdk2py.utils.thread import RecurrentThread
 
-# --- 连杆参数，直接取自 go2.xml，勿凭印象改 ---------------------------------
-HIP_X = 0.1934        # 髋部原点 |x|
-HIP_Y = 0.0465        # 髋部原点 |y|
-THIGH_Y = 0.0955      # 髋俯仰关节相对髋部原点的侧向偏移
-THIGH_LEN = 0.213     # 大腿
-CALF_LEN = 0.213      # 小腿
-FOOT_RADIUS = 0.022   # 足端接触球半径，足底 = foot 原点 - 0.022
+# --- 连杆参数与整机质量，来源是 model.py（它自己对着 go2.xml 校验）----------
+# 别在这里另写一份：几何错 1 mm，IK 差几度；质量错 1 kg，重力前馈差 10 N。
+from .model import (CALF_LEN, FOOT_RADIUS, HIP_X, HIP_Y, LEG_GEOM,  # noqa: F401
+                    THIGH_LEN, THIGH_Y, TOTAL_MASS)
 
 NUM_MOTOR = 12
 
@@ -113,16 +110,8 @@ NUM_MOTOR = 12
 # 不是宇树习惯的 FL, FR, RL, RR。搞错的话四条腿会乱蹬。
 CTRL_LEGS = ("FR", "FL", "RR", "RL")
 
-# 腿部顺序（几何侧），与下面 LEG_GEOM 一致
+# 腿部顺序（几何侧），与 LEG_GEOM（来自 model.py）一致
 LEGS = ("FL", "FR", "RL", "RR")
-
-LEG_GEOM = {
-    #        x          y        s
-    "FL": (+HIP_X, +HIP_Y, +1.0),
-    "FR": (+HIP_X, -HIP_Y, -1.0),
-    "RL": (-HIP_X, +HIP_Y, +1.0),
-    "RR": (-HIP_X, -HIP_Y, -1.0),
-}
 
 LIMITS = {
     "abduction": (-1.0472, 1.0472),
@@ -693,7 +682,10 @@ class Go2Controller:
     # 一条腿该顶的力，kp 小的时候机身会一直往下沉、腿一直是软的。真机上这个
     # 现象尤其明显（减速器有摩擦死区，仿真里没有），表现就是「腿没力气、
     # 抬不起来、一直在打滑」。所以按 τ = Jᵀ·f 直接把支撑力算成力矩前馈。
-    BODY_MASS = 15.0         # Go2 整机含电池约 15 kg
+    # 整机质量取 model.py 的实测值 15.206408 kg（机 6.921 + 四条腿各 2.071）。
+    # 原来写 15.0 是估的，重力前馈常年少给 1.4%，单腿支撑差 2 N，落地那一下
+    # 全靠 kp 静差补 —— 这也是 kp 一直降不下去的原因之一。
+    BODY_MASS = TOTAL_MASS
     GRAVITY = 9.81
     # 四条腿均分时的单腿体重（N）。注意 gravity_tau 用的是「总和 = 体重、
     # 按支撑权重分配」，不是每条腿固定这么多 —— 步态里只有两条腿在地上时，

@@ -6,10 +6,13 @@
 
 四步，每步都能单独验收，不通过不进下一步。
 
-- [ ] **0 模型**（不碰机器）
-  - 从 `quadruped/sim/unitree_mujoco/unitree_robots/go2/go2.xml` 抽真实惯量：trunk 6.921 / hip 0.678 / thigh 1.152 / calf 0.241 kg，整机 15.205（现在 `BODY_MASS = 15.0` 是估值）
-  - 新建 `quadruped/control/model.py`：连杆长度、质心、转动惯量、3 自由度腿的 RNEA（M / C / g）
-  - 验收：静态 RNEA 对照现有 `gravity_tau`，差 < 1%
+- [x] **0 模型**（不碰机器）— 2026-11-11 完成，`quadruped/control/model.py`
+  - 从 `quadruped/sim/unitree_mujoco/unitree_robots/go2/go2.xml` 抽真实惯量：trunk 6.921 / hip 0.678 / thigh 1.152 / calf 0.241 kg，整机 15.206408（原 `BODY_MASS = 15.0` 是估值，已改）
+  - `model.py`：连杆长度、质心、转动惯量、3 自由度腿的 RNEA（M / C / g），解析雅可比
+  - 验收（`test/model_check.py` 全过）：静态 RNEA 与 `gravity_tau` 差 1.7e-6（要求 < 1%）；与 MuJoCo `mj_rne` / `mj_fullM` 差 1e-13；`mj_kinematics` 差 8e-17
+  - 耗时：单腿 RNEA（含 q̇）61 µs、M 224 µs，四腿 ~220 µs / ~900 µs，200 Hz 下占 4% / 18%
+  - 顺带发现：`gravity_tau` 一直没算腿自重（站姿膝力矩 −0.27 N·m，是负载项的 4%），WBC 里要补上
+  - 惯量张量必须 R·diag·Rᵀ 转回连杆系 —— XML 里机身那三个数绕 y 转了 90°，照抄会把偏航惯量当横滚
 
 - [ ] **1 SRBD-MPC**（`quadruped/control/mpc.py`）
   - 状态 12 维（p, v, rpy, ω），决策变量 = 每个 knot 的四足三维地面反力
