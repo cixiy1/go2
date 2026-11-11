@@ -873,8 +873,8 @@ def main(argv=None) -> int:
                     print("\n切换风格（dry-run，不连狗）", flush=True)
                     return
                 label = backend.toggle_loco_gait()
-                print(f"\n风格 → {label}（跳和跑一起换）" if label else
-                      "\n官方控制器的步态在机器上，改不了", flush=True)
+                print(f"\n风格 → {label}" if label else
+                      "\n这个后端没有第二档步态", flush=True)
                 return
             if name == "jump_gait":
                 # 切风格只是改下一跳怎么跳、下一步怎么迈，腿上的动作照旧，

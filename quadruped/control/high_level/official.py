@@ -31,6 +31,17 @@
 配置（1027、2054、2055）
     SwitchJoystick、AutoRecoverySet、AutoRecoveryGet
 
+## 两档风格与自研对齐
+
+自研那份的 `mech` / `bio` 在官方这里落到两个运动模式上，名字照抄，键盘的
+Tab 因此换后端也不用改：
+
+    mech  标准小跑（对角腿交替，稳）  →  FreeWalk    灵动
+    bio   横向序列疾驰（快，姿态低）  →  FreeBound   并腿跑
+
+两者不是同一种步法：官方的并腿跑是前后两对腿交替蹬地，自研的疾驰是四条腿
+按左后→右后→左前→右前错开。对齐的是角色 —— 都代表「比标准小跑快的那一档」。
+
 ## 这份 SDK 缺的五条
 
 `unitree_sdk2py` 的 Go2 `SportClient` 没注册 SwitchGait(1011)、
@@ -130,10 +141,19 @@ class OfficialHighLevel:
     API_OK = 0
     PATH_SIZE = SPORT_PATH_POINT_SIZE
 
+    # 两档风格，和自研那份的 mech / bio 一一对应，落到官方的两个运动模式上：
+    #   mech  灵动（FreeWalk）  —— 默认小跑，稳，日常走动
+    #   bio   并腿跑（FreeBound）—— 前腿一对、后腿一对交替蹬地，快，姿态低
+    # 名字对齐是为了让键盘的 Tab 在两种后端上都能用；模式是机器上的，不是参数。
+    GAIT_STYLES = ("mech", "bio")
+    GAIT_STYLE_NAMES = {"mech": "灵动（FreeWalk）", "bio": "并腿跑（FreeBound）"}
+    GAIT_MODES = {"mech": "FreeWalk", "bio": "FreeBound"}
+
     def __init__(self, iface: str, domain: int, *, timeout: float = 3.0):
         self.iface = iface
         self.domain = domain
         self.state = None                      # 最近一帧 rt/sportmodestate
+        self.gait_style = "mech"               # 当前档，见 GAIT_STYLES
         ChannelFactoryInitialize(domain, iface)
         self._suber = ChannelSubscriber("rt/sportmodestate", SportModeState_)
         self._suber.Init(self._on_state, 10)
@@ -395,17 +415,38 @@ class OfficialHighLevel:
     def park(self) -> int:
         return self.StopMove()
 
-    # 风格切换是自研独有的（机械 / 仿生两档跳跃与跑法），官方没有对应概念。
-    # 留着同名属性返回 None，调用方不用按后端分支。
-    @property
-    def gait_style_label(self):
-        return None
+    # -- 风格：与自研同名，落到官方的运动模式上 --------------------------
 
+    # 当前档的名字，键盘状态行取「（」前面那段，所以括号里放英文模式名。
+    @property
+    def gait_style_label(self) -> str:
+        return self.GAIT_STYLE_NAMES[self.gait_style]
+
+    # 换档：mech 发 FreeWalk，bio 发 FreeBound。返回换完之后的档位键。
+    #
+    # 官方的这两档是运动模式，不是参数：切过去机器会重新规划步态。请求没送到
+    # （仿真里没有 sport 服务，回 3102）就不改本地档位 —— 状态行显示一个机器
+    # 实际没进去的模式，比不显示更误导。
+    def set_gait_style(self, style: str) -> str:
+        if style not in self.GAIT_STYLES:
+            raise ValueError(f"没有这种运动步态：{style}，只有 {self.GAIT_STYLES}")
+        code = self.FreeWalk() if style == "mech" else self.FreeBound(True)
+        if code != self.API_OK:
+            print(f"切 {self.GAIT_MODES[style]} 失败：{explain(code)}", flush=True)
+            return self.gait_style
+        self.gait_style = style
+        return style
+
+    # 在 mech / bio 之间来回切，返回切完之后的标签，调用方直接拿去显示。
+    def toggle_gait_style(self) -> str:
+        i = self.GAIT_STYLES.index(self.gait_style)
+        self.set_gait_style(self.GAIT_STYLES[(i + 1) % len(self.GAIT_STYLES)])
+        return self.gait_style_label
+
+    # 跳跃只有 FrontJump 一种，没有档可切。留着同名属性返回 None，
+    # 调用方按「没有标签」处理，不用给后端分支。
     @property
     def jump_style_label(self):
-        return None
-
-    def toggle_gait_style(self):
         return None
 
     def toggle_jump_style(self):
