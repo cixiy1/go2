@@ -86,14 +86,19 @@ class Form:
 
     def __init__(self, rows: list[tuple], values: dict, *,
                  title: str = "当前配置",
-                 prompt: str = "改哪一项（回车提交）"):
+                 prompt: str = "改哪一项（回车提交）",
+                 note: str = ""):
         self.rows = rows
         self.values = dict(values)
         self.title = title
         self.prompt = prompt
+        self.note = note
 
     def render(self) -> None:
         print(f"\n{self.title}（回车 = 按这套跑，输编号改）")
+        if self.note:
+            for line in self.note.splitlines():
+                print(f"  {line}")
         for i, (label, key, show, _) in enumerate(self.rows, 1):
             print(f"  {i}  {pad(label, 10)}{show(self.values[key])}")
 

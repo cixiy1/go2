@@ -251,8 +251,36 @@ _ENV_TEXT = {k: f"{label}  {note}" for k, label, note in ENVS}
 _MOTION_TEXT = {k: label for k, label, _ in MOTIONS}
 _CLIENT_TEXT = {k: label for k, label, _ in CLIENTS}
 
+# 放进表里是为了「临时试一下」不用记 `--` 透传，但必须标清楚它不是普通选项。
+_NUM_NOTE = ("注：kp / kd 与模型一起标定（仿真与真机同一套），一般不要动。\n"
+             "    改了下表只对当前环境成立，症状是「某个速度段开始打滑」，\n"
+             "    不容易联想到刚度。回车 = 用默认。")
 
-# 一屏配置。能改的就这三项，理由见上面那段注释和 `CLIENTS` 上面那段。
+
+def _show(key: str):
+    """字段的显示函数。数值项要把「已偏离默认」标出来。"""
+    if key == "env":
+        return lambda v: _ENV_TEXT[v]
+    if key == "motion":
+        return lambda v: _MOTION_TEXT[v]
+    if key == "client":
+        return lambda v: _CLIENT_TEXT[v]
+    return lambda v: "默认" if v is None else f"{v:g}   ← 已偏离默认"
+
+
+def _ask_number(name: str, cur):
+    """读一个数。回车 = 回到默认（None），不是「保持当前」。"""
+    raw = ask_line(f"  {name}（回车 = 用默认）：")
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"  「{raw}」不是数字，保持 {cur if cur is not None else '默认'}")
+        return cur
+
+
+# 一屏配置。
 def ask_settings() -> dict:
     def edit_env(cur):
         return pick("环境", ENVS, [k for k, *_ in ENVS].index(cur))
@@ -265,11 +293,14 @@ def ask_settings() -> dict:
 
     return Form(
         [
-            ("环境", "env", lambda v: _ENV_TEXT[v], edit_env),
-            ("运控", "motion", lambda v: _MOTION_TEXT[v], edit_motion),
-            ("控制端", "client", lambda v: _CLIENT_TEXT[v], edit_client),
+            ("环境", "env", _show("env"), edit_env),
+            ("运控", "motion", _show("motion"), edit_motion),
+            ("刚度 kp", "kp", _show("kp"), lambda cur: _ask_number("kp", cur)),
+            ("阻尼 kd", "kd", _show("kd"), lambda cur: _ask_number("kd", cur)),
+            ("控制端", "client", _show("client"), edit_client),
         ],
-        dict(env="sim-new", motion="vmc", client="__none__"),
+        dict(env="sim-new", motion="vmc", kp=None, kd=None, client="__none__"),
+        note=_NUM_NOTE,
     ).run()
 
 
@@ -375,6 +406,11 @@ def launch(entries: list[Entry], extra: list[str], cfg: dict,
     base: list[str] = []
     if preset == "sim":
         base += ["--preset", "sim"]
+    # kp / kd 只在用户显式改过时传，默认留空让控制器用内置那一套 —— 那个值是
+    # 跟模型一起标定的，不是在命令行上随手给的。
+    for key in ("kp", "kd"):
+        if cfg.get(key) is not None:
+            base += [f"--{key}", f"{cfg[key]:g}"]
     if cfg.get("client") and cfg["client"] != "__none__":
         base += ["--client", cfg["client"]]
     cmd_extra = base + extra          # 用户在 `--` 后给的排最后，才能覆盖
