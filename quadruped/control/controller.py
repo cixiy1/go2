@@ -355,8 +355,17 @@ _GAIT_ALIASES = {"trot": "mech", "bound": "bio"}
 #
 # `mode` 选力路的实现（`"vmc"` 现役 / `"mpc"` 自研），直接透传给 GaitParams。
 # 它不属于步态形态，只是方便「同一套步态参数换一条力路做 A/B」。
+#
+# 不给就落到环境变量 `GO2_MOTION`，那是启动器（`quadruped/cli/launcher.py`）
+# 设的。走环境变量而不是给每个控制器加一个 argparse 参数，是因为所有入口的
+# 步态最后都过这里 —— `main.py` 的子命令、键盘遥控经 `OursBackend` 到
+# `Go2Robot` 的兜底、`sim_check`，一处改就全覆盖。显式传参仍然优先。
 def make_gait(style: str, height: float = NOMINAL_HEIGHT,
-              real: bool = False, mode: str = "vmc") -> GaitParams:
+              real: bool = False, mode: str | None = None) -> GaitParams:
+    if mode is None:
+        # `or` 而不是 `get(..., "vmc")`：`GO2_MOTION= cmd` 这种空赋值很常见，
+        # 空串要当成没设，否则会一路走到 GaitParams 里去报「mode='' 不认识」。
+        mode = os.environ.get("GO2_MOTION") or "vmc"
     neutral = _neutral_feet(height)
     style = _GAIT_ALIASES.get(style, style)
 

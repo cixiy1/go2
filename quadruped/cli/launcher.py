@@ -16,8 +16,10 @@
 时每个控制器一个子进程，各跑各的。
 
 用法：
-    uv run python main.py                # 交互选，可多选
-    uv run python main.py keyboard       # 跳过选择，直接跑键盘遥控
+    uv run python main.py                # 交互：环境 → 运控 → 控制器
+    uv run python main.py keyboard       # 跳过选择，直接跑键盘遥控（默认仿真 / VMC）
+    uv run python main.py --sim          # 只起 MuJoCo 仿真器，占住当前终端
+    uv run python main.py --preset real --motion mpc keyboard
     uv run python main.py --list         # 只列清单
     uv run python main.py keyboard -- --iface en5     # -- 之后原样传给控制器
 """
@@ -153,7 +155,7 @@ def discover(groups: list[Group]) -> list[Entry]:
 
 # 打印菜单，返回 编号 → 控制器。
 def render_menu(groups: list[Group], entries: list[Entry]) -> dict[int, Entry]:
-    print("\nGo2 控制器\n")
+    print("\nGo2 统一入口\n")
     n = 0
     index: dict[int, Entry] = {}
     for g in groups:
@@ -218,6 +220,60 @@ def ask(groups: list[Group], entries: list[Entry]) -> list[Entry]:
         return picked
 
 
+# ---- 环境与运控 --------------------------------------------------------------
+#
+# 这两项不进控制器的 argparse：
+#   环境用 `--preset`，各控制器早就支持（`add_endpoint_args` 里注册的）；
+#   运控用环境变量 `GO2_MOTION`，由 `make_gait` 读 —— 所有入口的步态最后都过
+#   那里，一处覆盖全部。启动器只负责收集，往下传。
+#
+# 运控默认关：开启后回路周期 p95 从 5.8 ms 涨到 8.2 ms，而验收门限是 4 ms
+# （见 TODO.md Step 3）。默认开等于每次开机都踩在超时线上。
+
+ENVS = [
+    ("sim", "仿真", "lo0 / domain 1"),
+    ("real", "真机", "en5 / domain 0"),
+]
+
+MOTIONS = [
+    ("vmc", "关闭（VMC）", "单层反馈，回路 p95 5.8 ms"),
+    ("mpc", "开启（MPC + WBC）", "三层，回路 p95 8.2 ms，仍在超时"),
+]
+
+
+def _pick(title: str, rows: list[tuple], default: int = 0) -> str:
+    """单选。rows 是 (key, 标签, 说明)。回车取默认，EOF 也取默认。"""
+    print(f"\n{title}")
+    for i, (_, label, note) in enumerate(rows, 1):
+        print(f"  {i}  {_pad(label, 18)}{note}")
+    hint = f"回车 = {rows[default][1]}"
+    while True:
+        try:
+            raw = input(f"选哪个（{hint}）：").strip()
+        except EOFError:
+            print()
+            return rows[default][0]
+        if not raw:
+            return rows[default][0]
+        if raw.isdigit() and 1 <= int(raw) <= len(rows):
+            return rows[int(raw) - 1][0]
+        print(f"  「{raw}」不是编号")
+
+
+# 起 MuJoCo 仿真器。路径与 mjpython 的判断都在脚本里，这里只管把终端换过去。
+# 仿真器是长驻 GUI，会占住这个终端，所以和控制器必须分两个终端跑。
+def run_sim() -> int:
+    script = os.path.join(ROOT, "quadruped", "sim", "run_sim.sh")
+    if not os.access(script, os.X_OK):
+        print(f"找不到可执行的 {script}")
+        return 2
+    print("启动 MuJoCo 仿真器 …")
+    print("控制器另开一个终端：uv run python main.py\n")
+    sys.stdout.flush()
+    os.chdir(ROOT)
+    os.execv(script, [script])
+
+
 # 两个控制器同时占 lowcmd / 键盘，DDS 上会互相覆盖，先拦一下。
 def check_conflict(entries: list[Entry], assume_yes: bool) -> bool:
     problems = []
@@ -243,7 +299,8 @@ def check_conflict(entries: list[Entry], assume_yes: bool) -> bool:
     return ans in ("y", "yes")
 
 
-def launch(entries: list[Entry], extra: list[str], assume_yes: bool = False) -> int:
+def launch(entries: list[Entry], extra: list[str], preset: str | None = None,
+           motion: str | None = None, assume_yes: bool = False) -> int:
     if not entries:
         return 1
     if extra and len(entries) > 1:
@@ -253,19 +310,29 @@ def launch(entries: list[Entry], extra: list[str], assume_yes: bool = False) -> 
         print("已取消。")
         return 2
 
+    # 环境走 `--preset` 拼在控制器参数前面；用户自己在 `--` 后面给了同名的，
+    # argparse 取最后一个，等于用户覆盖启动器，不用特殊处理。
+    cmd_extra = (["--preset", preset] if preset else []) + extra
+    env = dict(os.environ)
+    if motion:
+        env["GO2_MOTION"] = motion
+
+    print(f"\n环境 {preset or '默认'} / 运控 {motion or '默认'}")
     os.chdir(ROOT)                       # 让 `-m` 从项目根找包
-    cmds = [[sys.executable, "-m", e.module] + extra for e in entries]
+    cmds = [[sys.executable, "-m", e.module] + cmd_extra for e in entries]
 
     if len(cmds) == 1:
         # 单片：直接换掉自己。Ctrl+C 就是给控制器本身，信号路径最短。
-        print(f"\n启动 {entries[0].title} …\n")
+        print(f"启动 {entries[0].title} …\n")
         sys.stdout.flush()
+        if motion:
+            os.environ["GO2_MOTION"] = motion
         os.execv(sys.executable, cmds[0])
 
     # 多片：各一个子进程，输出共用这个终端（控制器会自己画状态行）。
     procs = []
     for e, cmd in zip(entries, cmds):
-        procs.append(subprocess.Popen(cmd, cwd=ROOT))
+        procs.append(subprocess.Popen(cmd, cwd=ROOT, env=env))
         print(f"启动 {e.title} …")
     print()
     code = 0
@@ -298,20 +365,35 @@ def main(argv=None) -> int:
         head, extra = argv, []
 
     ap = argparse.ArgumentParser(
-        prog="main.py", description="Go2 控制器入口：选一个（或几个）跑起来")
+        prog="main.py",
+        description="Go2 统一入口：选环境、运控、控制器，或者单独起仿真器")
     ap.add_argument("controllers", nargs="*",
                     help="控制器文件名，如 keyboard；不给就交互选")
+    ap.add_argument("--preset", choices=("sim", "real"), default=None,
+                    help="环境：sim=仿真（lo0/domain1），real=真机（en5/domain0）")
+    ap.add_argument("--motion", choices=("vmc", "mpc"), default=None,
+                    help="运控：vmc=关闭（单层反馈），mpc=开启（MPC+WBC 三层）")
+    ap.add_argument("--sim", action="store_true",
+                    help="只起 MuJoCo 仿真器（长驻 GUI，占住当前终端）")
     ap.add_argument("--list", action="store_true", help="只列清单，不运行")
     ap.add_argument("--yes", "-y", action="store_true", help="冲突时不再问")
     args = ap.parse_args(head)
+
+    if args.sim:
+        return run_sim()
 
     groups = discover_groups()
     entries = discover(groups)
     if args.list:
         render_menu(groups, entries)
+        print(f"  环境：{args.preset or '交互时选'}    "
+              f"运控：{args.motion or '交互时选'}")
+        print("  起仿真器：uv run python main.py --sim\n")
         return 0
 
     if args.controllers:
+        # 直接点名：不再问，缺的用默认（仿真 / VMC）。
+        preset, motion = args.preset or "sim", args.motion or "vmc"
         by_stem = {e.stem: e for e in entries}
         picked = []
         for name in args.controllers:
@@ -324,9 +406,12 @@ def main(argv=None) -> int:
                 return 2
             picked.append(e)
     else:
+        # 交互：环境 → 运控 → 控制器，三段都问。命令行给过的就不再问。
+        preset = args.preset or _pick("环境", ENVS)
+        motion = args.motion or _pick("运控", MOTIONS)
         picked = ask(groups, entries)
 
-    return launch(picked, extra, args.yes)
+    return launch(picked, extra, preset, motion, args.yes)
 
 
 if __name__ == "__main__":

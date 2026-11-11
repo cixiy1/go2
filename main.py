@@ -1,9 +1,13 @@
-"""Go2 项目入口：问你要跑哪个控制器，然后拉起来。
+"""Go2 统一入口：选环境、运控、控制器，或者单独起仿真器。
 
-    uv run python main.py                  # 交互选，可多选
-    uv run python main.py --list           # 只看清单
-    uv run python main.py keyboard         # 跳过选择
-    uv run python main.py keyboard -- --iface en5    # -- 之后原样传给控制器
+    uv run python main.py                              # 交互：环境 → 运控 → 控制器
+    uv run python main.py --sim                        # 只起 MuJoCo 仿真器
+    uv run python main.py --preset sim --motion mpc keyboard
+    uv run python main.py --list                       # 只看清单
+    uv run python main.py keyboard -- --iface en5      # -- 之后原样传给控制器
+
+`--preset` 选仿真/真机，`--motion` 选是否开启 MPC+WBC 运控（默认关，回路周期
+还没达标）。两项都可以不给，交互时会问。
 
 控制器放在 quadruped/control/ 下的分组目录里。每个分组在自己的 `__init__.py`
 声明 `GROUP`（标题 + 顺序）就上菜单，没声明的（`virtual/` 抽象层）是内部实现：
