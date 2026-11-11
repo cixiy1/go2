@@ -18,8 +18,8 @@ import socket
 from quadruped.robot.body import Go2Robot
 
 
+# 网卡不在就早点说清楚，别等 DDS 报一句看不懂的错。
 def require_iface(iface: str) -> None:
-    """网卡不在就早点说清楚，别等 DDS 报一句看不懂的错。"""
     if Go2Robot.interface_exists(iface):
         return
     avail = ", ".join(n for _, n in socket.if_nameindex())
@@ -41,14 +41,14 @@ class _Delegate:
     target = ""
     client = None
 
+    # SetTimeout → Init → BalanceStand，返回码非 0 = 对端没响应。
     def start(self) -> int:
-        """SetTimeout → Init → BalanceStand，返回码非 0 = 对端没响应。"""
         self.client.SetTimeout(3.0)
         self.client.Init()
         return self.client.BalanceStand()
 
+    # 跳跃。排完就返回，不等落地（两份都是非阻塞的）。
     def jump(self) -> int:
-        """跳跃。排完就返回，不等落地（两份都是非阻塞的）。"""
         return self.client.jump_async()
 
     def crouch(self) -> int:
@@ -60,17 +60,17 @@ class _Delegate:
     def stand(self) -> int:
         return self.client.stand_async()
 
+    # 停车，不等收步完成 —— 20 Hz 主循环不能在这里睡着。
     def stop_motion(self) -> int:
-        """停车，不等收步完成 —— 20 Hz 主循环不能在这里睡着。"""
         return self.client.stop_async()
 
+    # 停止：中断动作并站定，仍然不阻塞。
     def freeze(self) -> int:
-        """停止：中断动作并站定，仍然不阻塞。"""
         return self.client.freeze()
 
+    # 收工。自研那份要蹲下再松（仿真桥不发指令就没力矩），官方停住即可，
+    # 所以这件事由各自的 `park()` 决定，这里只转发。
     def close(self) -> None:
-        """收工。自研那份要蹲下再松（仿真桥不发指令就没力矩），官方停住即可，
-        所以这件事由各自的 `park()` 决定，这里只转发。"""
         self.client.park()
 
     @property
@@ -131,10 +131,10 @@ class OursBackend(_Delegate):
                 "仿真先起 ./quadruped/sim/run_sim.sh；真机先确认 setup_en5.sh 过了")
         self.client = c.high_level
 
+    # 控制回路节奏，形如「 回路5.0/6.2」。真机抖不抖先看这个：
+    # 均值超过 6 ms 或 max 跳到十几毫秒，就是时序问题，不是参数问题。
     @property
     def loop_text(self) -> str:
-        """控制回路节奏，形如「 回路5.0/6.2」。真机抖不抖先看这个：
-        均值超过 6 ms 或 max 跳到十几毫秒，就是时序问题，不是参数问题。"""
         st = self.robot.controller.loop_stats()
         if not st.get("n"):
             return ""
@@ -152,9 +152,9 @@ class OursBackend(_Delegate):
     def height(self):
         return self.robot.controller.body_height()
 
+    # 腿正被跳跃 / 蹲伏占着。这时候别再发速度，等动作播完自然接着走。
     @property
     def busy(self):
-        """腿正被跳跃 / 蹲伏占着。这时候别再发速度，等动作播完自然接着走。"""
         return self.robot.controller.busy
 
 
@@ -189,9 +189,9 @@ class OfficialBackend(_Delegate):
     def height(self):
         return self.client.height
 
+    # 原生服务在机器上跑，动作是同步 RPC，这边只有 progress 一个线索。
     @property
     def busy(self):
-        """原生服务在机器上跑，动作是同步 RPC，这边只有 progress 一个线索。"""
         return self.client.busy
 
 

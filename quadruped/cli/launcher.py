@@ -36,8 +36,8 @@ ROOT = os.path.dirname(os.path.dirname(_HERE))              # 项目根
 CONTROL_DIR = os.path.join(os.path.dirname(_HERE), "control")
 
 
+# 终端显示宽度：中日韩字符占两格。
 def _width(s: str) -> int:
-    """终端显示宽度：中日韩字符占两格。"""
     return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
 
 
@@ -59,11 +59,10 @@ class Group:
         return self.error is None
 
 
+# 扫 control/ 下的子包，读 `GROUP`。没声明的跳过，声明的按 order 排。
+#
+# 导入失败的包也留一条 —— 一个包整个 import 不进来，菜单里空着比报错更难查。
 def discover_groups() -> list[Group]:
-    """扫 control/ 下的子包，读 `GROUP`。没声明的跳过，声明的按 order 排。
-
-    导入失败的包也留一条 —— 一个包整个 import 不进来，菜单里空着比报错更难查。
-    """
     groups: list[Group] = []
     for name in sorted(os.listdir(CONTROL_DIR)):
         if name.startswith((".", "_")) or name == "__pycache__":
@@ -120,8 +119,8 @@ class Entry:
         return self.error is None
 
 
+# 在每个分组目录里扫模块，导入后按协议校验 META。
 def discover(groups: list[Group]) -> list[Entry]:
-    """在每个分组目录里扫模块，导入后按协议校验 META。"""
     found: list[Entry] = []
     for g in groups:
         if not g.ok:
@@ -145,8 +144,8 @@ def discover(groups: list[Group]) -> list[Entry]:
     return found
 
 
+# 打印菜单，返回 编号 → 控制器。
 def render_menu(groups: list[Group], entries: list[Entry]) -> dict[int, Entry]:
-    """打印菜单，返回 编号 → 控制器。"""
     print("\nGo2 控制器\n")
     n = 0
     index: dict[int, Entry] = {}
@@ -172,8 +171,8 @@ def render_menu(groups: list[Group], entries: list[Entry]) -> dict[int, Entry]:
     return index
 
 
+# 问一句选哪个。回车 = 第一个能跑的。
 def ask(groups: list[Group], entries: list[Entry]) -> list[Entry]:
-    """问一句选哪个。回车 = 第一个能跑的。"""
     index = render_menu(groups, entries)
     if not index:
         print("目录里没有控制器。")
@@ -212,8 +211,8 @@ def ask(groups: list[Group], entries: list[Entry]) -> list[Entry]:
         return picked
 
 
+# 两个控制器同时占 lowcmd / 键盘，DDS 上会互相覆盖，先拦一下。
 def check_conflict(entries: list[Entry], assume_yes: bool) -> bool:
-    """两个控制器同时占 lowcmd / 键盘，DDS 上会互相覆盖，先拦一下。"""
     problems = []
     if sum(e.owns_cmd for e in entries) > 1:
         names = "、".join(e.title for e in entries if e.owns_cmd)

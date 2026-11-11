@@ -74,16 +74,16 @@ class HighLevelController:
 
     # -- 原生对齐：连接与姿态 ------------------------------------------
 
+    # 原生 SportClient 里 Init() 建立 api 通道；这里的通道在 connect() 就有了。
     def Init(self) -> int:
-        """原生 SportClient 里 Init() 建立 api 通道；这里的通道在 connect() 就有了。"""
         return self.API_OK
 
     def SetTimeout(self, seconds: float) -> int:
         self.timeout = float(seconds)
         return self.API_OK
 
+    # 正在走的话先收步站定。原生由运动服务内部处理，我们得显式做。
     def _settle(self, timeout: float = 2.5) -> None:
-        """正在走的话先收步站定。原生由运动服务内部处理，我们得显式做。"""
         c = self.controller
         if c._mode != "gait":
             return
@@ -95,46 +95,45 @@ class HighLevelController:
         while c._mode == "gait" and time.time() - t0 < timeout:
             time.sleep(0.05)
 
+    # 站好并保持。原生里这一步同时会切到平衡站立模式。
     def BalanceStand(self) -> int:
-        """站好并保持。原生里这一步同时会切到平衡站立模式。"""
         self._settle()
         self.controller.apply_pose(self.controller.stand_joint_target(), hold_s=0.25)
         return self.API_OK
 
+    # 从趴/蹲立起来。
     def StandUp(self) -> int:
-        """从趴/蹲立起来。"""
         return self.BalanceStand()
 
+    # 跌倒恢复。我们只会「立起来」这一种，翻过去的姿态自己解不了。
     def RecoveryStand(self) -> int:
-        """跌倒恢复。我们只会「立起来」这一种，翻过去的姿态自己解不了。"""
         return self.BalanceStand()
 
+    # 蹲下保持（原生为切换站立关闭）。
     def StandDown(self) -> int:
-        """蹲下保持（原生为切换站立关闭）。"""
         self._settle()
         self.controller.apply_pose(self.controller.joint_from_feet(self.controller.stand_feet(MIN_HEIGHT)),
                           hold_s=0.3)
         return self.API_OK
 
+    # 近似坐姿：蹲到最低保持。真正的坐姿要把后腿折叠、前腿伸直，还没做。
     def Sit(self) -> int:
-        """近似坐姿：蹲到最低保持。真正的坐姿要把后腿折叠、前腿伸直，还没做。"""
         return self.StandDown()
 
     def RiseSit(self) -> int:
         return self.BalanceStand()
 
+    # 松成阻尼器，趴下。
     def Damp(self) -> int:
-        """松成阻尼器，趴下。"""
         self.controller.shutdown()
         return self.API_OK
 
+    # 收工：停步 → 蹲到最低 → 阻尼。
+    #
+    # 仿真桥把 rt/lowcmd 直接换算成力矩，不发就没有力矩（真机是 1 秒后
+    # 保护停车）。所以进程退出前必须自己蹲好再松腿，否则是从 27 cm 高度
+    # 直接砸下去，腿会甩到限位。
     def park(self) -> int:
-        """收工：停步 → 蹲到最低 → 阻尼。
-
-        仿真桥把 rt/lowcmd 直接换算成力矩，**不发就没有力矩**（真机是 1 秒后
-        保护停车）。所以进程退出前必须自己蹲好再松腿，否则是从 27 cm 高度
-        直接砸下去，腿会甩到限位。
-        """
         self._settle()
         self.StopMove()
         self.StandDown()
@@ -142,15 +141,14 @@ class HighLevelController:
 
     # -- 原生对齐：速度 --------------------------------------------------
 
+    # 设定机身速度，一直保持到 StopMove 或下一次 Move。不阻塞。
+    #
+    # vx 前、vy 左、vyaw 逆时针为正，机体系。加速度由控制器限幅（1 m/s²、
+    # 2.5 rad/s²），所以从静止直接给 0.4 m/s 也不会一下窜出去。
+    #
+    # 正在跳/蹲这类姿态动作时忽略速度指令 —— 腿此刻被序列占着，插一脚只会
+    # 把动作撕碎。动作播完调用方再发就行，键盘那边就是这么做的。
     def Move(self, vx: float, vy: float, vyaw: float) -> int:
-        """设定机身速度，一直保持到 StopMove 或下一次 Move。**不阻塞**。
-
-        vx 前、vy 左、vyaw 逆时针为正，机体系。加速度由控制器限幅（1 m/s²、
-        2.5 rad/s²），所以从静止直接给 0.4 m/s 也不会一下窜出去。
-
-        正在跳/蹲这类姿态动作时忽略速度指令 —— 腿此刻被序列占着，插一脚只会
-        把动作撕碎。动作播完调用方再发就行，键盘那边就是这么做的。
-        """
         c = self.controller
         if not c.connected:
             return 3102                       # 原生「对端未响应」的近似
@@ -161,17 +159,16 @@ class HighLevelController:
         c.set_velocity(vx, vy, vyaw)
         return self.API_OK
 
+    # 腿是否正被一段姿态动作占用（跳跃、蹲伏）。
     @property
     def busy(self) -> bool:
-        """腿是否正被一段姿态动作占用（跳跃、蹲伏）。"""
         return self.controller.busy
 
+    # 停车并站定，不等收步完成，返回后腿还在渐收。
+    #
+    # 原生是「发完就不管」，我们的回路自己把幅度收到 0 再转 hold，所以调用方
+    # 不必在这里睡着等 —— 键盘 20 Hz 的主循环就靠这个不卡。
     def stop_async(self) -> int:
-        """停车并站定，**不等收步完成**，返回后腿还在渐收。
-
-        原生是「发完就不管」，我们的回路自己把幅度收到 0 再转 hold，所以调用方
-        不必在这里睡着等 —— 键盘 20 Hz 的主循环就靠这个不卡。
-        """
         c = self.controller
         if c.velocity_active():
             c.stop_velocity()
@@ -179,13 +176,12 @@ class HighLevelController:
             c.apply_pose_async(c.stand_joint_target(), duration=0.2)
         return self.API_OK
 
+    # 停车：目标速度归零，等步态幅度收到 0、四脚站稳再返回（约 0.5 s）。
+    #
+    # 原生是「发完就不管」，因为真机上运动服务一直在跑；我们的控制回路跟着
+    # 进程走，进程一退就不能停在摆动态 —— 那样只剩三条腿撑地，会侧翻。
+    # 所以这里多等一会儿，最多 1.5 s。
     def StopMove(self) -> int:
-        """停车：目标速度归零，等步态幅度收到 0、四脚站稳再返回（约 0.5 s）。
-
-        原生是「发完就不管」，因为真机上运动服务一直在跑；我们的控制回路跟着
-        进程走，进程一退就不能停在摆动态 —— 那样只剩三条腿撑地，会侧翻。
-        所以这里多等一会儿，最多 1.5 s。
-        """
         c = self.controller
         if c.velocity_active():
             c.stop_velocity()
@@ -198,41 +194,41 @@ class HighLevelController:
             c.hold()
         return self.API_OK
 
+    # 改机身高度。与原生一致，参数是相对默认高度的偏移，范围 -0.12~0.03。
     def BodyHeight(self, offset: float) -> int:
-        """改机身高度。与原生一致，参数是相对默认高度的偏移，范围 -0.12~0.03。"""
         self._settle()
         h = max(MIN_HEIGHT, min(self.controller.height + 0.03, self.controller.height + offset))
         self.controller.apply_pose(self.controller.joint_from_feet(self.controller.stand_feet(h)),
                           hold_s=0.25)
         return self.API_OK
 
+    # 机身相对姿态（弧度）。正 pitch 为低头，与原生一致。
     def Euler(self, roll: float, pitch: float, yaw: float) -> int:
-        """机身相对姿态（弧度）。正 pitch 为低头，与原生一致。"""
         self._settle()
         feet = self.controller.feet_for_body_pose(roll=roll, pitch=pitch, yaw=yaw)
         self.controller.apply_pose(self.controller.joint_from_feet(feet), hold_s=0.3)
         return self.API_OK
 
+    # 近似「打招呼」：低头-抬头两下。原生是坐姿抬前爪，我们没做坐姿。
     def Hello(self) -> int:
-        """近似「打招呼」：低头-抬头两下。原生是坐姿抬前爪，我们没做坐姿。"""
         self.ensure_standing()
         self.nod(times=2, pitch=0.14)
         return self.API_OK
 
+    # 近似「伸懒腰」：蹲 → 站起来 → 前倾。
     def Stretch(self) -> int:
-        """近似「伸懒腰」：蹲 → 站起来 → 前倾。"""
         self.squat(depth=0.07, hold=0.3)
         self.tilt(pitch=0.12, hold=0.5)
         return self.API_OK
 
+    # 换步态类型。我们只有一种对角小跑，返回原生「不支持」。
     def SwitchGait(self, gait_type: int) -> int:
-        """换步态类型。我们只有一种对角小跑，返回原生「不支持」。"""
         return self.API_UNSUPPORTED
 
     # -- 基础动作：跳跃与蹲伏 ------------------------------------------
 
+    # 蹲下并停住。立即返回，腿由控制回路按序列摆好。
     def crouch_async(self, depth: float = 0.08) -> int:
-        """蹲下并停住。**立即返回**，腿由控制回路按序列摆好。"""
         c = self.controller
         h = max(MIN_HEIGHT, c.height - depth)
         c.pose_sequence([(c.joint_from_feet(c.stand_feet(h)), 0.22, 0.0)],
@@ -240,32 +236,32 @@ class HighLevelController:
         print(f"蹲下：机身 {c.height:.3f} → {h:.3f} m", flush=True)
         return self.API_OK
 
+    # 从蹲姿站起来。立即返回。
     def uncrouch_async(self) -> int:
-        """从蹲姿站起来。**立即返回**。"""
         self.controller.apply_pose_async(self.controller.stand_joint_target(),
                                          duration=0.28)
         return self.API_OK
 
+    # 停止：中断当前动作并站定，不阻塞。与官方那份同名同义。
     def freeze(self) -> int:
-        """停止：中断当前动作并站定，不阻塞。与官方那份同名同义。"""
         return self.stand_async()
 
+    # 回到站立并保持，顺便中断正在演的动作。立即返回。
     def stand_async(self) -> int:
-        """回到站立并保持，顺便中断正在演的动作。**立即返回**。"""
         self.controller.apply_pose_async(self.controller.stand_joint_target(),
                                          duration=0.28)
         return self.API_OK
 
+    # 蹲下并保持（squat 是蹲一下就起来，这个是停在低处）。
     def crouch(self, depth: float = 0.08) -> int:
-        """蹲下并保持（squat 是蹲一下就起来，这个是停在低处）。"""
         self._settle()
         code = self.crouch_async(depth)
         self.controller.wait_idle(3.0)
         self._report("蹲底")
         return code
 
+    # 从蹲姿站起来。
     def uncrouch(self) -> int:
-        """从蹲姿站起来。"""
         self._settle()
         code = self.uncrouch_async()
         self.controller.wait_idle(3.0)
@@ -293,9 +289,9 @@ class HighLevelController:
                   air=0.14, fall=0.28, land=0.14, hold_land=0.08,
                   recover=0.35, hold_end=0.18)
 
+    # (离地, 触地, 站定) 三个时刻，与序列本身严格一致。
     @classmethod
     def _jump_times(cls) -> tuple[float, float, float]:
-        """(离地, 触地, 站定) 三个时刻，与序列本身严格一致。"""
         T = cls.JUMP_T
         t_lift = T["crouch"] + T["hold_in"] + T["push1"] + T["push2"]
         t_touch = t_lift + T["air"] + T["fall"]
@@ -353,8 +349,8 @@ class HighLevelController:
         "bio": "仿生（后腿发力跳 / 横向序列疾驰）",
     }
 
+    # 切风格：跳跃序列和运动步态一起换，返回切完之后的那个。
     def set_jump_style(self, style: str) -> str:
-        """切风格：跳跃序列和运动步态一起换，返回切完之后的那个。"""
         if style not in self.JUMP_STYLES:
             raise ValueError(f"没有这种跳跃风格：{style}，只有 {self.JUMP_STYLES}")
         self.jump_style = style
@@ -363,8 +359,8 @@ class HighLevelController:
             self.controller.set_gait_style(style)
         return style
 
+    # 在当前风格和下一个之间来回切。
     def toggle_jump_style(self) -> str:
-        """在当前风格和下一个之间来回切。"""
         i = self.JUMP_STYLES.index(self.jump_style)
         return self.set_jump_style(self.JUMP_STYLES[(i + 1) % len(self.JUMP_STYLES)])
 
@@ -382,8 +378,8 @@ class HighLevelController:
     def gait_style_label(self) -> str:
         return self.controller.gait_style_label
 
+    # 换风格（`mech` 机械 / `bio` 仿生），跳跃动作一并跟着换。
     def set_gait_style(self, style: str) -> str:
-        """换风格（`mech` 机械 / `bio` 仿生），跳跃动作一并跟着换。"""
         style = self.controller.set_gait_style(style)
         if style in self.JUMP_STYLES:
             self.jump_style = style
@@ -397,15 +393,14 @@ class HighLevelController:
         print(f"运动步态 → {self.controller.gait_style_label}", flush=True)
         return style
 
+    # 仿生：后腿蹬得多、前腿伸前等落地。
+    #
+    # `sweep_at(t)` 给出该时刻足端相对中立位要后退多少米 —— 走着跳的时候，
+    # 机身在地面上往前跑，脚在机体系里就必须等速后退，否则脚一踩实就把机身
+    # 拽停。这是「起跳把速度吃掉」的唯一原因，也是整条序列里最容易漏的一环。
     def _jump_bio_steps(self, jf, crouch: float, push: float, sweep_at,
                         prep_h: float | None = None,
                         reach_scale: float = 1.0) -> list[tuple]:
-        """仿生：后腿蹬得多、前腿伸前等落地。
-
-        `sweep_at(t)` 给出该时刻足端相对中立位要后退多少米 —— 走着跳的时候，
-        机身在地面上往前跑，脚在机体系里就必须等速后退，否则脚一踩实就把机身
-        拽停。这是「起跳把速度吃掉」的唯一原因，也是整条序列里最容易漏的一环。
-        """
         T = self.JUMP_T
         # 走着跳时「前腿伸前」要收着点：那套伸展是给原地跳准备的，机身带着
         # 速度前进时脚再往前伸一大截，落地等于在重心前面插了一根撑杆，
@@ -451,25 +446,23 @@ class HighLevelController:
         add(lambda s: jf(NOMINAL_HEIGHT, sweep=s), "recover", T["hold_end"])
         return steps
 
+    # 机械：四条腿同一个相位，一起伸、一起收、一起落地。
+    #
+    # 踩地时后腿比前腿多伸 `JUMP_MECH_BIAS`，这是重心补偿而不是前后分工：质心
+    # 偏后，不给这点补偿，前腿会先离地、落地时又慢半拍，四腿并跳就成了前后两段。
+    # 空中和落地两段则严格同长度，四只脚才可能同时离地、同时着地。
     def _jump_mech_steps(self, jf, crouch: float, push: float, sweep_at,
                          prep_h: float | None = None) -> list[tuple]:
-        """机械：四条腿同一个相位，一起伸、一起收、一起落地。
-
-        踩地时后腿比前腿多伸 `JUMP_MECH_BIAS`，这是重心补偿而不是前后分工：质心
-        偏后，不给这点补偿，前腿会先离地、落地时又慢半拍，四腿并跳就成了前后两段。
-        空中和落地两段则严格同长度，四只脚才可能同时离地、同时着地。
-        """
         T = self.JUMP_T
         lift, bias = self.JUMP_MECH_DRIVE, self.JUMP_MECH_BIAS
         clock = [0.0]
         steps: list[tuple] = []
 
+        # 四条腿同一个相位。
+        #
+        # 后腿那点偏置只在 `ground=True`（脚踩着地）时给：踩地时它是补重心，
+        # 悬空时它就变成「后腿多伸」的仰头力矩了 —— 带进空中就是落地仰头的根源。
         def all4(h, sweep=(0.0, 0.0), dh=0.0, pitch=0.0, ground: bool = False):
-            """四条腿同一个相位。
-
-            后腿那点偏置只在 `ground=True`（脚踩着地）时给：踩地时它是补重心，
-            悬空时它就变成「后腿多伸」的仰头力矩了 —— 带进空中就是落地仰头的根源。
-            """
             b = bias if ground else 0.0
             return jf(h, rear_h=dh + b, front_h=dh, pitch=pitch, sweep=sweep)
 
@@ -498,42 +491,41 @@ class HighLevelController:
         add(lambda s: jf(NOMINAL_HEIGHT, sweep=s), "recover", T["hold_end"])
         return steps
 
+    # 起跳：蓄力 → 蹬伸 → 空中 → 触地 → 回正。立即返回。
+    #
+    # 两种步态（`style` 不给就用当前设置，Shift 键在键盘脚本里切换）：
+    #
+    # `bio` 仿生 —— 四条腿分工，机械狗看着像活物：
+    #
+    # - 后腿发力。蹬伸段后腿压得更深（`+JUMP_REAR_DRIVE`），前腿也蹬、但蹬得
+    #   少（`+JUMP_FRONT_PUSH`）。前腿不能不出力，也不能提前折起来 —— 前端一悬空，
+    #   机身在尾部支撑下立刻前栽（实测 front_h=0 时 pitch 到 +32°，脸朝下）。
+    # - 前腿伸前等落地。离地之后前足往机身前方送 `JUMP_FRONT_REACH`，后足往
+    #   后拖 `JUMP_REAR_TRAIL`，落地那一下是前腿先够到地面接住机身，后腿随后
+    #   甩回来撑住。不这么分，四条腿只会一起上下蹬，看着像弹簧不像狗。
+    #
+    # `mech` 机械 —— 四条腿一个相位，一起伸一起收，脚掌始终排成一条线。
+    # 没有前后分工，跳得矮一点、姿态硬一点，好处是俯仰天生是平的。
+    #
+    # 位置伺服做跳，靠的是「脚还踩着地面那一下，机身被快速顶高」。蹬伸必须在
+    # 腿伸到极限之前结束，否则冲量全变成撞限位；所以这里拆成两段，第二段更短
+    # 更快，速度是递增的。
+    #
+    # 走着跳（按住 w 时按空格）：速度用实测的，不用指令的 —— 步态本身
+    # 打滑，指令 0.3 时机身实际只有 0.2 出头，按指令算会算过头、落地往前栽。
+    # 足端偏移不再是「飞了多远」的归一化进度，而是按时间积分的后退量：
+    # 机身在地上以 v 前进，脚在机体系里就必须以 v 后退，否则脚一踩实就把机身
+    # 拽停 —— 之前「一起跳速度就没了」就是这个原因。空中把脚收到机身前方
+    # `JUMP_LAND_REACH` 准备接地面，触地那 0.12 s 再按 v 往后扫，落地不打滑。
+    #
+    # 整条序列交给控制回路播，调用方拿到就返回 —— 跳的同时你按别的键、调速度、
+    # 甚至再跳一次都行，不用等它落地站稳。
+    #
+    # 能不能离地取决于 kp（刚度）和力矩上限，仿真的地面摩擦也会影响。起不来就
+    # 把 push 加 0.01 再试；翻倒了就说明蹬伸太快，把第二段 duration 拉长。
     def jump_async(self, crouch: float = 0.185, push: float = 0.265,
                    vx: float | None = None, vy: float | None = None,
                    style: str | None = None) -> int:
-        """起跳：蓄力 → 蹬伸 → 空中 → 触地 → 回正。**立即返回**。
-
-        两种步态（`style` 不给就用当前设置，Shift 键在键盘脚本里切换）：
-
-        `bio` 仿生 —— 四条腿分工，机械狗看着像活物：
-
-        - **后腿发力**。蹬伸段后腿压得更深（`+JUMP_REAR_DRIVE`），前腿也蹬、但蹬得
-          少（`+JUMP_FRONT_PUSH`）。前腿不能不出力，也不能提前折起来 —— 前端一悬空，
-          机身在尾部支撑下立刻前栽（实测 front_h=0 时 pitch 到 +32°，脸朝下）。
-        - **前腿伸前等落地**。离地之后前足往机身前方送 `JUMP_FRONT_REACH`，后足往
-          后拖 `JUMP_REAR_TRAIL`，落地那一下是前腿先够到地面接住机身，后腿随后
-          甩回来撑住。不这么分，四条腿只会一起上下蹬，看着像弹簧不像狗。
-
-        `mech` 机械 —— 四条腿一个相位，一起伸一起收，脚掌始终排成一条线。
-        没有前后分工，跳得矮一点、姿态硬一点，好处是俯仰天生是平的。
-
-        位置伺服做跳，靠的是「脚还踩着地面那一下，机身被快速顶高」。蹬伸必须在
-        腿伸到极限之前结束，否则冲量全变成撞限位；所以这里拆成两段，第二段更短
-        更快，速度是递增的。
-
-        **走着跳**（按住 w 时按空格）：速度用**实测**的，不用指令的 —— 步态本身
-        打滑，指令 0.3 时机身实际只有 0.2 出头，按指令算会算过头、落地往前栽。
-        足端偏移不再是「飞了多远」的归一化进度，而是**按时间**积分的后退量：
-        机身在地上以 v 前进，脚在机体系里就必须以 v 后退，否则脚一踩实就把机身
-        拽停 —— 之前「一起跳速度就没了」就是这个原因。空中把脚收到机身前方
-        `JUMP_LAND_REACH` 准备接地面，触地那 0.12 s 再按 v 往后扫，落地不打滑。
-
-        整条序列交给控制回路播，调用方拿到就返回 —— 跳的同时你按别的键、调速度、
-        甚至再跳一次都行，不用等它落地站稳。
-
-        能不能离地取决于 kp（刚度）和力矩上限，仿真的地面摩擦也会影响。起不来就
-        把 push 加 0.01 再试；翻倒了就说明蹬伸太快，把第二段 duration 拉长。
-        """
         c = self.controller
         c.require_connection()
 
@@ -574,8 +566,8 @@ class HighLevelController:
                       else self.JUMP_MECH_STAND_BIAS)
         r_fwd = self.JUMP_LAND_REACH if moving else 0.0
 
+        # t 时刻足端相对中立位要后退多少米，(前后, 左右)。
         def sweep_at(t: float) -> tuple[float, float]:
-            """t 时刻足端相对中立位要后退多少米，(前后, 左右)。"""
             if moving:
                 knots = [(0.0, 0.0), (t_lift, s_lift), (t_touch, -r_fwd),
                          (t_touch + 0.12, -r_fwd + spd * 0.12), (t_done, 0.0),
@@ -598,18 +590,17 @@ class HighLevelController:
                                  min(self.JUMP_TRAVEL, sx * math.copysign(1.0, vy))))
             return (sx, sx * vy / vx)
 
+        # 一组足端目标。
+        #
+        # h       机身高度基准（四个足端 z 都由它定）
+        # sweep   足端整体后退量（米），机身因此相对地面前进
+        # rear_h / front_h   后 / 前腿额外伸展（正=蹬得更长，负=折起）
+        # rear_x / front_x   后 / 前足额外前后偏移（正=往机身前方）
+        # pitch   机身相对足端低头多少（正=低头，与 Euler() 同一套约定）。
+        #         空中前后腿前后拉伸会产生低头力矩，靠它反着补回来。
         def jf(h: float, rear_h: float = 0.0, front_h: float = 0.0,
                rear_x: float = 0.0, front_x: float = 0.0, pitch: float = 0.0,
                sweep: tuple[float, float] = (0.0, 0.0)):
-            """一组足端目标。
-
-            h       机身高度基准（四个足端 z 都由它定）
-            sweep   足端整体后退量（米），机身因此相对地面前进
-            rear_h / front_h   后 / 前腿额外伸展（正=蹬得更长，负=折起）
-            rear_x / front_x   后 / 前足额外前后偏移（正=往机身前方）
-            pitch   机身相对足端低头多少（正=低头，与 Euler() 同一套约定）。
-                    空中前后腿前后拉伸会产生低头力矩，靠它反着补回来。
-            """
             cp, sp = math.cos(pitch), math.sin(pitch)
             sx, sy = sweep
             feet = {}
@@ -638,19 +629,19 @@ class HighLevelController:
               f"蹬到 {push:.3f} m，{tail}", flush=True)
         return self.API_OK
 
+    # 跳跃（阻塞版，给命令行用）：等落地回正再返回。
     def jump(self, crouch: float = 0.185, push: float = 0.265,
              vx: float | None = None, vy: float | None = None,
              style: str | None = None) -> int:
-        """跳跃（阻塞版，给命令行用）：等落地回正再返回。"""
         code = self.jump_async(crouch=crouch, push=push, vx=vx, vy=vy, style=style)
         self.controller.wait_idle(4.0)
         return code
 
     # -- 基础动作：静态姿态 --------------------------------------------
 
+    # 趴着就先立正，站着就什么都不做。所有静态动作开头都调它。
     def ensure_standing(self, threshold: float = 0.20,
                         hold: float = 0.4) -> bool:
-        """趴着就先立正，站着就什么都不做。所有静态动作开头都调它。"""
         z = self.controller.body_height()
         if z is not None and z >= threshold:
             return False
@@ -658,20 +649,20 @@ class HighLevelController:
         self.controller.apply_pose(self.controller.stand_joint_target(), hold_s=hold)
         return True
 
+    # 打完一个静态姿态后，报告实测高度与姿态，方便和指令对账。
     def _report(self, label: str = "") -> None:
-        """打完一个静态姿态后，报告实测高度与姿态，方便和指令对账。"""
         c = self.controller
         h = c.body_height()
         z = f"{h:.3f}" if h is not None else "--"
         rpy = ", ".join(f"{v:+.2f}" for v in c.rpy) if c.rpy else "--"
         print(f"  {label}实测 z={z}  rpy=({rpy})", flush=True)
 
+    # 从任意姿态立正站好。
     def stand_up(self, hold: float = 0.6) -> float:
-        """从任意姿态立正站好。"""
         return self.controller.apply_pose(self.controller.stand_joint_target(), hold_s=hold)
 
+    # 下蹲到 height-depth 再站起来。depth 上限约 0.12（再低小腿顶机身）。
     def squat(self, depth: float = 0.08, hold: float = 0.6) -> None:
-        """下蹲到 height-depth 再站起来。depth 上限约 0.12（再低小腿顶机身）。"""
         self.ensure_standing()
         h = max(MIN_HEIGHT, self.controller.height - depth)
         q = self.controller.joint_from_feet(self.controller.stand_feet(h))
@@ -680,13 +671,12 @@ class HighLevelController:
         self._report("蹲底")
         self.stand_up(hold=0.3)
 
+    # 脚不动、机身低头/抬头或侧滚，停一下再回正。
+    #
+    # pitch 正为低头（前倾），roll 正为向左滚，单位弧度。
+    # 这是最直观的 IK 演示：机身转了，机体系里看到的足端坐标就变了。
     def tilt(self, pitch: float = 0.15, roll: float = 0.0,
              hold: float = 0.8) -> None:
-        """脚不动、机身低头/抬头或侧滚，停一下再回正。
-
-        pitch 正为低头（前倾），roll 正为向左滚，单位弧度。
-        这是最直观的 IK 演示：机身转了，机体系里看到的足端坐标就变了。
-        """
         self.ensure_standing()
         feet = self.controller.feet_for_body_pose(roll=roll, pitch=pitch)
         print(f"倾身：pitch={math.degrees(pitch):+.0f}° "
@@ -695,9 +685,9 @@ class HighLevelController:
         self._report("倾斜时")
         self.stand_up(hold=0.2)
 
+    # 重心平移：机身水平移到脚上方偏 dx/dy 的位置（负 dx 为后坐）。
     def shift(self, dx: float = 0.05, dy: float = 0.0,
               hold: float = 0.6) -> None:
-        """重心平移：机身水平移到脚上方偏 dx/dy 的位置（负 dx 为后坐）。"""
         self.ensure_standing()
         feet = self.controller.feet_for_body_pose(shift=(dx, dy))
         print(f"重心平移：dx={dx:+.2f} dy={dy:+.2f} m", flush=True)
@@ -705,8 +695,8 @@ class HighLevelController:
         self._report("平移时")
         self.stand_up(hold=0.2)
 
+    # 点头：低头-抬头循环，行程由一个连续的姿态插值完成。
     def nod(self, times: int = 2, pitch: float = 0.12) -> None:
-        """点头：低头-抬头循环，行程由一个连续的姿态插值完成。"""
         self.ensure_standing()
         print(f"点头 {times} 次，幅度 {math.degrees(pitch):.0f}°", flush=True)
         feet_low = self.controller.joint_from_feet(self.controller.feet_for_body_pose(pitch=pitch))
@@ -716,39 +706,38 @@ class HighLevelController:
             self.controller.apply_pose(feet_up, hold_s=0.05)
         self.stand_up(hold=0.2)
 
+    # 蹲到最低再把腿松成阻尼，趴在地上。之后要动就重新调 stand_up。
     def lie_down(self, hold: float = 0.3) -> None:
-        """蹲到最低再把腿松成阻尼，趴在地上。之后要动就重新调 stand_up。"""
         q = self.controller.joint_from_feet(self.controller.stand_feet(MIN_HEIGHT))
         self.controller.apply_pose(q, hold_s=hold)
         self.controller.shutdown()
 
     # -- 基础动作：步态类 ----------------------------------------------
 
+    # 原地踏步：四个速度全 0，足端只上下动，用来验证步态相位。
     def step_in_place(self, seconds: float = 3.0) -> dict:
-        """原地踏步：四个速度全 0，足端只上下动，用来验证步态相位。"""
         self.ensure_standing()
         print(f"原地踏步 {seconds:.0f}s", flush=True)
         return self.controller._run_gait(vx=0.0, vy=0.0, yaw=0.0,
                                 timeout=0.8 + seconds)
 
+    # 按时间开环走，不保证距离（打滑、偏航都会累积误差）。
     def walk_time(self, vx: float = 0.2, vy: float = 0.0, yaw: float = 0.0,
                   seconds: float = 3.0) -> dict:
-        """按时间开环走，不保证距离（打滑、偏航都会累积误差）。"""
         return self.controller._run_gait(vx=vx, vy=vy, yaw=yaw, timeout=0.8 + seconds)
 
     # -- 任务：闭环 ----------------------------------------------------
 
+    # 向前走 distance 米（负值就是后退）。
+    #
+    # 收步过程中还会滑行约 stop_ramp×speed ≈ 8 cm，所以默认留 8 cm 余量。
     def forward(self, distance: float, vx: float = 0.3,
                 tol: float = 0.08) -> dict:
-        """向前走 distance 米（负值就是后退）。
-
-        收步过程中还会滑行约 stop_ramp×speed ≈ 8 cm，所以默认留 8 cm 余量。
-        """
         return self._translate(distance, 0.0, vx=vx, tol=tol)
 
+    # 向左平移 distance 米（负值向右）。
     def strafe(self, distance: float, vy: float = 0.2,
                tol: float = 0.08) -> dict:
-        """向左平移 distance 米（负值向右）。"""
         return self._translate(0.0, distance, vy=vy, tol=tol)
 
     def _translate(self, dx: float, dy: float, vx: float = 0.3,
@@ -789,13 +778,12 @@ class HighLevelController:
         self.history.append(("translate", out))
         return out
 
+    # 原地转 degrees 度，正为逆时针。
+    #
+    # 开环偏航实测约打七折（指令 0.5 得 0.35 rad/s），闭环按实际 yaw 判断，
+    # 所以慢一点但角度准。同样要留收步滑行的十来度余量。
     def turn(self, degrees: float, yaw_rate: float = 0.5,
              tol: float = math.radians(10)) -> dict:
-        """原地转 degrees 度，正为逆时针。
-
-        开环偏航实测约打七折（指令 0.5 得 0.35 rad/s），闭环按实际 yaw 判断，
-        所以慢一点但角度准。同样要留收步滑行的十来度余量。
-        """
         c = self.controller
         c.require_connection()
         if not c.rpy:
@@ -819,12 +807,11 @@ class HighLevelController:
         self.history.append(("turn", out))
         return out
 
+    # 按名字依次执行，名字就是本类的方法名。
+    #
+    # sequence(["stand_up", "squat", "forward", "turn", "lie_down"])
+    # 需要参数的动作写 (名字, 字典)：("forward", {"distance": 2.0})
     def sequence(self, names) -> list[dict]:
-        """按名字依次执行，名字就是本类的方法名。
-
-        sequence(["stand_up", "squat", "forward", "turn", "lie_down"])
-        需要参数的动作写 (名字, 字典)：("forward", {"distance": 2.0})
-        """
         out = []
         for item in names:
             name, kw = (item if isinstance(item, tuple) else (item, {}))
@@ -836,8 +823,8 @@ class HighLevelController:
             out.append({name: r} if r is not None else {name: None})
         return out
 
+    # 急停：停回路并给腿下阻尼。之后要动就重新调动作，回路会自己重启。
     def stop(self) -> None:
-        """急停：停回路并给腿下阻尼。之后要动就重新调动作，回路会自己重启。"""
         self.controller.shutdown()
 
 

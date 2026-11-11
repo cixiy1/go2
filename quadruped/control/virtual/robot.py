@@ -74,8 +74,9 @@ class Backend(Protocol):
     target: str
     client: object          # 往下发指令的那个对象（Move / StopMove / 动作接口）
 
+    # SetTimeout → Init → BalanceStand，返回码非 0 = 对端没响应。
     def start(self) -> int:
-        """SetTimeout → Init → BalanceStand，返回码非 0 = 对端没响应。"""
+        ...
 
     @property
     def pos(self): ...
@@ -103,28 +104,27 @@ class Backend(Protocol):
 
 # ---- 事实：网卡与端点 ------------------------------------------------------
 
+# 仿真器实际绑的网卡与域号（读它的 config.py，不靠约定猜）。
 def sim_network() -> dict:
-    """仿真器实际绑的网卡与域号（读它的 config.py，不靠约定猜）。"""
     return Go2Robot.sim_network()
 
 
+# 这个环境能用的控制端，顺序即菜单顺序。
 def clients_for(preset: str) -> tuple[str, ...]:
-    """这个环境能用的控制端，顺序即菜单顺序。"""
     return Go2Robot.clients_for(preset)
 
 
+# 显式参数 → Endpoint。规则见 Go2Robot.resolve。
 def resolve_endpoint(preset=None, *, iface=None, domain=None) -> Endpoint:
-    """显式参数 → Endpoint。规则见 Go2Robot.resolve。"""
     cfg = Go2Robot.resolve(preset, domain=domain, iface=iface)
     return Endpoint(cfg["preset"], cfg["iface"], int(cfg["domain"]))
 
 
+# 候选网卡：仿真器那块在最前，接机器人的网段其次，其余垫后。
+#
+# 本机真有的网卡都列出来，加上真机默认网卡 —— 那块没插的时候也列，标一句
+# 「未检测到」，省得人以为程序没认出来。
 def _interfaces() -> list[dict]:
-    """候选网卡：仿真器那块在最前，接机器人的网段其次，其余垫后。
-
-    本机真有的网卡都列出来，加上真机默认网卡 —— 那块没插的时候也列，标一句
-    「未检测到」，省得人以为程序没认出来。
-    """
     sim = sim_network()
     real_pre = Go2Robot.PRESETS["real"]["iface"]
 
@@ -156,11 +156,10 @@ def _interfaces() -> list[dict]:
     return head + others
 
 
+# 编号选一项，回车取默认。非交互终端直接返回默认。
+#
+# 做成通用的一小段：网口和控制端两个菜单都是这个形状。
 def _pick(options: list[dict], default_no: int, prompt: str) -> int:
-    """编号选一项，回车取默认。非交互终端直接返回默认。
-
-    做成通用的一小段：网口和控制端两个菜单都是这个形状。
-    """
     if not sys.stdin.isatty():
         return default_no
     while True:
@@ -180,8 +179,8 @@ def _pick(options: list[dict], default_no: int, prompt: str) -> int:
         print(f"  只认 1 到 {len(options)}。")
 
 
+# 定下接哪一台。没给网卡/预设就先列出来问一句，回车 = 仿真。
 def choose_endpoint(preset=None, *, iface=None, domain=None) -> Endpoint:
-    """定下接哪一台。没给网卡/预设就先列出来问一句，回车 = 仿真。"""
     if preset is None and iface is None:
         cands = _interfaces()
         print("\n网口：")
@@ -197,13 +196,12 @@ def choose_endpoint(preset=None, *, iface=None, domain=None) -> Endpoint:
     return resolve_endpoint(preset, iface=iface, domain=domain)
 
 
+# 定下用哪个控制端。`want` 给了就校验，没给就问一句。
+#
+# 只有一个候选时也停下来问：让人看清自己连的是哪个控制器，回车即可，
+# 比「程序自己决定了」清楚。`--client` 写错或环境不支持时抛 ValueError，
+# 消息里说明这个环境到底有哪几个。
 def choose_client(endpoint: Endpoint, want: str | None = None) -> str:
-    """定下用哪个控制端。`want` 给了就校验，没给就问一句。
-
-    只有一个候选时也停下来问：让人看清自己连的是哪个控制器，回车即可，
-    比「程序自己决定了」清楚。`--client` 写错或环境不支持时抛 ValueError，
-    消息里说明这个环境到底有哪几个。
-    """
     options = clients_for(endpoint.preset)
     where = "仿真" if endpoint.sim else "真机"
 
@@ -232,12 +230,11 @@ def choose_client(endpoint: Endpoint, want: str | None = None) -> str:
     return options[n - 1]
 
 
+# 连上去。返回时机器人已经 BalanceStand。
+#
+# `gains`（kp / kd / tau）只对自研控制端有意义，官方那份跑在机器上，
+# 给了也不会用到 —— 传下去由实现自己忽略。
 def connect(endpoint: Endpoint, kind: str = "ours", **gains) -> Backend:
-    """连上去。返回时机器人已经 BalanceStand。
-
-    `gains`（kp / kd / tau）只对自研控制端有意义，官方那份跑在机器上，
-    给了也不会用到 —— 传下去由实现自己忽略。
-    """
     from quadruped.control.virtual.backends import BACKENDS   # 延迟：见模块说明
 
     try:
@@ -251,8 +248,8 @@ def connect(endpoint: Endpoint, kind: str = "ours", **gains) -> Backend:
 # 每个控制器都要这几个参数，抄一遍就会长得不一样（有人叫 --net，有人叫
 # --interface），所以在这里注册。
 
+# 给控制器的 ArgumentParser 加上 --iface / --preset / --domain / --client。
 def add_endpoint_args(parser) -> None:
-    """给控制器的 ArgumentParser 加上 --iface / --preset / --domain / --client。"""
     g = parser.add_argument_group("机器人")
     g.add_argument("--iface", default=None,
                    help="网卡名：lo0 = 仿真（域号读仿真器 config.py），其它 = 真机 domain 0")

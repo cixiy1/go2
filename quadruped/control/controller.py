@@ -154,30 +154,28 @@ MODEL_PATH = os.path.join(
 # 步态参数
 # ===========================================================================
 
+# 抬脚曲线 0→1→0，快抬慢落。
+#
+# 原来是 (1−cos2πs)/2：两端导数都是 0，也就是起飞最慢、落地最慢。
+# 仿真里没问题（脚是理想刚体），真机上这一条很致命：Go2 足端是橡胶球，
+# 支承相还主动压地几毫米，压进去之后和地面是「粘」住的。起飞那一下的
+# 垂直速度接近 0，腿拉不动这块橡胶，位置环只能硬抗 —— 关节顶着 10 N·m
+# 以上出不了位移，机身被反作用撞得一震一震，同时脚在地面干磨，就是
+# 「硬摩擦声 + 高频震动 + 走不动」这三件事。
+#
+# 改成前 40% 抬到顶（正弦上升，起飞那一刻斜率最大）、后 60% 落下
+# （余弦下降，落地仍然柔和）。峰值处两段导数都是 0，接得上。
 def _raise(s: float) -> float:
-    """抬脚曲线 0→1→0，**快抬慢落**。
-
-    原来是 (1−cos2πs)/2：两端导数都是 0，也就是起飞最慢、落地最慢。
-    仿真里没问题（脚是理想刚体），真机上这一条很致命：Go2 足端是橡胶球，
-    支承相还主动压地几毫米，压进去之后和地面是「粘」住的。起飞那一下的
-    垂直速度接近 0，腿拉不动这块橡胶，位置环只能硬抗 —— 关节顶着 10 N·m
-    以上出不了位移，机身被反作用撞得一震一震，同时脚在地面干磨，就是
-    「硬摩擦声 + 高频震动 + 走不动」这三件事。
-
-    改成前 40% 抬到顶（正弦上升，起飞那一刻斜率最大）、后 60% 落下
-    （余弦下降，落地仍然柔和）。峰值处两段导数都是 0，接得上。
-    """
     if s < 0.4:
         return math.sin(math.pi * s / 0.8)
     return math.cos(math.pi * (s - 0.4) / 1.2)
 
 
+# 摆动相水平四次多项式 f(s)=a3·s³ + a4·s⁴ 的两个系数。
+#
+# 约束 f(0)=f'(0)=f''(0)=0, f(1)=1, f'(1)=u, u=-(1-duty)/duty
+# 解出 a3 = 4-u, a4 = u-3。
 def _swing_poly_coeffs(duty: float) -> tuple[float, float]:
-    """摆动相水平四次多项式 f(s)=a3·s³ + a4·s⁴ 的两个系数。
-
-    约束 f(0)=f'(0)=f''(0)=0, f(1)=1, f'(1)=u, u=-(1-duty)/duty
-    解出 a3 = 4-u, a4 = u-3。
-    """
     u = -(1.0 - duty) / duty
     return 4.0 - u, u - 3.0
 
@@ -310,9 +308,9 @@ class GaitParams:
         self.wrench = wrench
         self.a3, self.a4 = _swing_poly_coeffs(duty)
 
+    # 一个周期里四脚全离地的时间。两组支撑不重叠就是腾空相。
     @property
     def aerial_time(self) -> float:
-        """一个周期里四脚全离地的时间。两组支撑不重叠就是腾空相。"""
         return max(0.0, (1.0 - 2.0 * self.duty) * self.period)
 
     @property
@@ -323,8 +321,8 @@ class GaitParams:
     def swing_time(self) -> float:
         return self.period * (1.0 - self.duty)
 
+    # 一个支撑相内足端相对机身走过的距离 = 机身速度 × 支撑时间。
     def stride(self, vx: float, vy: float) -> tuple[float, float]:
-        """一个支撑相内足端相对机身走过的距离 = 机身速度 × 支撑时间。"""
         return vx * self.stance_time, vy * self.stance_time
 
 
@@ -332,22 +330,21 @@ class GaitParams:
 _GAIT_ALIASES = {"trot": "mech", "gallop": "bio"}
 
 
+# 按风格造一套步态参数。
+#
+# 只有两档，和跳跃风格 mech/bio 同名同义，两边始终一致：
+#
+# - `mech` 机械：高层运动一直用的那套标准小跑（对角腿交替、0.5 s 周期、
+#   抬脚 6 cm、步幅 7.5 cm）。原本的参数，没有任何反馈和速度闭环。慢，
+#   但每一步都一样，不会走样。
+# - `bio`  仿生：我们自己按猫科步法图做的横向序列疾驰（左后→右后→左前→
+#   右前），四腿错开、支撑力连续，腿上有速度闭环和姿态反馈。
+#
+# `real=True` 现在只影响 `bio`：步幅收小（仿真里打滑是「损失」，真机打滑是
+# 「整条腿在地上刨，一步都走不动」）、抬脚抬高（真机足端有橡胶、地面软，
+# 6 cm 的余量经常蹭地）。`mech` 不分叉，真机与仿真同一套原样参数。
 def make_gait(style: str, height: float = NOMINAL_HEIGHT,
               real: bool = False) -> GaitParams:
-    """按风格造一套步态参数。
-
-    只有两档，和跳跃风格 mech/bio 同名同义，两边始终一致：
-
-    - `mech` 机械：高层运动一直用的那套标准小跑（对角腿交替、0.5 s 周期、
-      抬脚 6 cm、步幅 7.5 cm）。原本的参数，没有任何反馈和速度闭环。慢，
-      但每一步都一样，不会走样。
-    - `bio`  仿生：我们自己按猫科步法图做的横向序列疾驰（左后→右后→左前→
-      右前），四腿错开、支撑力连续，腿上有速度闭环和姿态反馈。
-
-    `real=True` 现在只影响 `bio`：步幅收小（仿真里打滑是「损失」，真机打滑是
-    「整条腿在地上刨，一步都走不动」）、抬脚抬高（真机足端有橡胶、地面软，
-    6 cm 的余量经常蹭地）。`mech` 不分叉，真机与仿真同一套原样参数。
-    """
     neutral = _neutral_feet(height)
     style = _GAIT_ALIASES.get(style, style)
     if style == "mech":
@@ -485,17 +482,16 @@ def make_gait(style: str, height: float = NOMINAL_HEIGHT,
         f"（旧名 trot→mech、gallop→bio 仍可用，另留 bound 做对照）")
 
 
+# 四足对称站位（模块级版本，GaitParams 初始化时用）。
+#
+# 侧向位置必须走 `Go2Controller.neutral_y`，不能再自己算一遍。
+# 原先这里是 `LEG_GEOM[leg][1] + s*THIGH_Y`，和 `neutral_y` 数学上等价，
+# 但两处各写一份的后果是：只要改站宽而不知道有两个来源，就会只改一边。
+# `foot_target` 用 `gait.neutral`，`p_nom` 用 `stand_feet`（走 neutral_y），
+# 两者差一个站宽的量，轨迹基准和支撑权重闸门的基准就对不上。
+#
+# spread 是每侧再往外撑的距离（米），左腿 +、右腿 −。
 def _neutral_feet(height: float, spread: float = 0.0) -> dict:
-    """四足对称站位（模块级版本，GaitParams 初始化时用）。
-
-    侧向位置必须走 `Go2Controller.neutral_y`，**不能再自己算一遍**。
-    原先这里是 `LEG_GEOM[leg][1] + s*THIGH_Y`，和 `neutral_y` 数学上等价，
-    但两处各写一份的后果是：只要改站宽而不知道有两个来源，就会只改一边。
-    `foot_target` 用 `gait.neutral`，`p_nom` 用 `stand_feet`（走 neutral_y），
-    两者差一个站宽的量，轨迹基准和支撑权重闸门的基准就对不上。
-
-    spread 是每侧再往外撑的距离（米），左腿 +、右腿 −。
-    """
     return {leg: (LEG_GEOM[leg][0],
                   Go2Controller.neutral_y(leg) + LEG_GEOM[leg][2] * spread,
                   FOOT_RADIUS - height) for leg in LEGS}
@@ -505,15 +501,15 @@ def _neutral_feet(height: float, spread: float = 0.0) -> dict:
 # 几何工具（旋转、角度归一、转置乘）
 # ===========================================================================
 
+# 绕 x 轴旋转（右手系）。
 def _rot_x(v, q):
-    """绕 x 轴旋转（右手系）。"""
     c, s = math.cos(q), math.sin(q)
     x, y, z = v
     return (x, y * c - z * s, y * s + z * c)
 
 
+# 绕 y 轴旋转（右手系）。注意返回值里 x 的符号，别照抄教科书矩阵。
 def _rot_y(v, q):
-    """绕 y 轴旋转（右手系）。注意返回值里 x 的符号，别照抄教科书矩阵。"""
     c, s = math.cos(q), math.sin(q)
     x, y, z = v
     return (x * c + z * s, y, -x * s + z * c)
@@ -523,17 +519,16 @@ def _add(a, b):
     return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
 
 
+# 把角度归一到 (-π, π]。
+#
+# 右腿的 abduction 是两个第三象限 atan2 相减，不归一就会得到 6.12 rad
+# 这种值，看着像越限，其实是同一个角。
 def _wrap_pi(a: float) -> float:
-    """把角度归一到 (-π, π]。
-
-    右腿的 abduction 是两个第三象限 atan2 相减，不归一就会得到 6.12 rad
-    这种值，看着像越限，其实是同一个角。
-    """
     return math.atan2(math.sin(a), math.cos(a))
 
 
+# ZYX 顺序的旋转矩阵（机体系 → 世界系），与 IMU 的 rpy 同一套约定。
 def _rpy_to_R(roll: float, pitch: float, yaw: float):
-    """ZYX 顺序的旋转矩阵（机体系 → 世界系），与 IMU 的 rpy 同一套约定。"""
     cr, sr = math.cos(roll), math.sin(roll)
     cp, sp = math.cos(pitch), math.sin(pitch)
     cy, sy = math.cos(yaw), math.sin(yaw)
@@ -544,8 +539,8 @@ def _rpy_to_R(roll: float, pitch: float, yaw: float):
     )
 
 
+# Rᵀ·v：把世界系的位移换到机体系。
 def _mat_t_vec(R, v):
-    """Rᵀ·v：把世界系的位移换到机体系。"""
     return (R[0][0] * v[0] + R[1][0] * v[1] + R[2][0] * v[2],
             R[0][1] * v[0] + R[1][1] * v[1] + R[2][1] * v[2],
             R[0][2] * v[0] + R[1][2] * v[1] + R[2][2] * v[2])
@@ -769,59 +764,57 @@ class Go2Controller:
     # 基础几何
     # ------------------------------------------------------------------
 
+    # 髋部原点在机体系的位置。
     @staticmethod
     def hip_origin(leg: str) -> tuple[float, float, float]:
-        """髋部原点在机体系的位置。"""
         x, y, _ = LEG_GEOM[leg]
         return (x, y, 0.0)
 
+    # abduction = 0 时足端所在的 y。
+    #
+    # 这不是髋部原点的 y。abduction 绕 x 转，只有当整个侧向偏移
+    # (HIP_Y + THIGH_Y = 0.142) 都转回水平位置时，足端才落在髋俯仰关节
+    # 正下方，此时 q1 = 0 —— 也就是 home 关键帧那个姿态。
+    #
+    # 用 HIP_Y 会得到 q1 ≈ -0.35 rad 的外八字站位，白白吃掉 20° 的
+    # abduction 行程，而且四条腿受力不对称。
     @staticmethod
     def neutral_y(leg: str) -> float:
-        """abduction = 0 时足端所在的 y。
-
-        这不是髋部原点的 y。abduction 绕 x 转，只有当整个侧向偏移
-        (HIP_Y + THIGH_Y = 0.142) 都转回水平位置时，足端才落在髋俯仰关节
-        正下方，此时 q1 = 0 —— 也就是 home 关键帧那个姿态。
-
-        用 HIP_Y 会得到 q1 ≈ -0.35 rad 的外八字站位，白白吃掉 20° 的
-        abduction 行程，而且四条腿受力不对称。
-        """
         _, y, s = LEG_GEOM[leg]
         return y + s * THIGH_Y
 
+    # 髋俯仰关节（thigh joint）在机体系的位置，随 abduction 一起偏转。
     @classmethod
     def hip_pitch_joint(cls, leg: str, q1: float) -> tuple[float, float, float]:
-        """髋俯仰关节（thigh joint）在机体系的位置，随 abduction 一起偏转。"""
         _, _, s = LEG_GEOM[leg]
         return _add(cls.hip_origin(leg), _rot_x((0.0, s * THIGH_Y, 0.0), q1))
 
+    # 四足对称站位的足端坐标（足端 body 原点），直接喂给 ik_all。
     @classmethod
     def stand_feet(cls, height: float = NOMINAL_HEIGHT,
                    spread: float = 0.0) -> dict:
-        """四足对称站位的足端坐标（足端 body 原点），直接喂给 ik_all。"""
         return {leg: (LEG_GEOM[leg][0],
                       cls.neutral_y(leg) + LEG_GEOM[leg][2] * spread,
                       FOOT_RADIUS - height) for leg in LEGS}
 
+    # 用「机身高度 + 足端相对中立位的水平偏移」描述足端，调试更顺手。
     @classmethod
     def foot_from_body(cls, leg: str, body_z: float,
                        xy_offset=(0.0, 0.0)) -> tuple:
-        """用「机身高度 + 足端相对中立位的水平偏移」描述足端，调试更顺手。"""
         return (LEG_GEOM[leg][0] + xy_offset[0],
                 cls.neutral_y(leg) + xy_offset[1],
                 FOOT_RADIUS - body_z)
 
+    # 让机身相对世界系倾斜 / 平移，足端落点不动 → 机体系下的足端坐标。
+    #
+    # 这是做「俯仰、横滚、重心平移」这类静态动作的唯一入口：脚踩在原地，
+    # 机身按 R(roll,pitch,yaw) 转过去，机体系里看到的足端位置就是 Rᵀ·(p - base)。
+    #
+    # pitch 正为低头（x 轴指向下方），roll 正为向左滚，yaw 正为逆时针。
     @classmethod
     def feet_for_body_pose(cls, roll: float = 0.0, pitch: float = 0.0,
                            yaw: float = 0.0, shift=(0.0, 0.0),
                            height: float | None = None) -> dict:
-        """让机身相对世界系倾斜 / 平移，足端落点不动 → 机体系下的足端坐标。
-
-        这是做「俯仰、横滚、重心平移」这类静态动作的唯一入口：脚踩在原地，
-        机身按 R(roll,pitch,yaw) 转过去，机体系里看到的足端位置就是 Rᵀ·(p - base)。
-
-        pitch 正为低头（x 轴指向下方），roll 正为向左滚，yaw 正为逆时针。
-        """
         h = NOMINAL_HEIGHT if height is None else height
         R = _rpy_to_R(roll, pitch, yaw)
         out = {}
@@ -836,9 +829,9 @@ class Go2Controller:
     # 正运动学
     # ------------------------------------------------------------------
 
+    # 三个关节角 → 足端在机体系的位置。q = (q1, q2, q3)，弧度。
     @staticmethod
     def fk_leg(leg: str, q) -> tuple[float, float, float]:
-        """三个关节角 → 足端在机体系的位置。q = (q1, q2, q3)，弧度。"""
         q1, q2, q3 = q
         _, _, s = LEG_GEOM[leg]
 
@@ -849,26 +842,24 @@ class Go2Controller:
         t0 = _rot_x((0.0, s * THIGH_Y, 0.0), q1)
         return _add(_add(Go2Controller.hip_origin(leg), t0), _rot_x(foot_in_hip, q1))
 
+    # q12 = 12 个关节角，顺序与 LowState / LowCmd 一致：FR,FL,RR,RL。
+    #
+    # 这里必须用 `CTRL_LEGS` 而不是 `LEGS`。两个常量的顺序不一样
+    # （LEGS 是 FL,FR,RL,RR），用错了会把左右腿的正解对调 —— 表现就是
+    # 「目标站立的腿实际在飞、目标摆动的腿实际踩在地上」，看起来像相位
+    # 整体错半周期，很容易带偏诊断方向。
     @classmethod
     def fk_all(cls, q12) -> dict:
-        """q12 = 12 个关节角，顺序与 LowState / LowCmd 一致：FR,FL,RR,RL。
-
-        这里必须用 `CTRL_LEGS` 而不是 `LEGS`。两个常量的顺序不一样
-        （LEGS 是 FL,FR,RL,RR），用错了会把左右腿的正解对调 —— 表现就是
-        「目标站立的腿实际在飞、目标摆动的腿实际踩在地上」，看起来像相位
-        整体错半周期，很容易带偏诊断方向。
-        """
         return {leg: cls.fk_leg(leg, q12[3 * i: 3 * i + 3])
                 for i, leg in enumerate(CTRL_LEGS)}
 
+    # 足端位置对三个关节角的雅可比，返回 Jᵀ（3×3）。
+    #
+    # Jᵀ 的第 j 行 = 第 j 个关节对应的足端位移方向，于是 τ = Jᵀ·f 一次算完。
+    # 数值微分就够：fk_leg 是纯三角运算，1e-6 的扰动能把误差压到 1e-9，
+    # 比手推解析式不容易写错，而这个量只用来算重力前馈，差一点无所谓。
     @staticmethod
     def jacobian_leg(leg: str, q, eps: float = 1e-6) -> tuple:
-        """足端位置对三个关节角的雅可比，返回 Jᵀ（3×3）。
-
-        Jᵀ 的第 j 行 = 第 j 个关节对应的足端位移方向，于是 τ = Jᵀ·f 一次算完。
-        数值微分就够：fk_leg 是纯三角运算，1e-6 的扰动能把误差压到 1e-9，
-        比手推解析式不容易写错，而这个量只用来算重力前馈，差一点无所谓。
-        """
         eps = 1e-6 if not eps else eps
         p0 = Go2Controller.fk_leg(leg, q)
         cols = []
@@ -880,41 +871,40 @@ class Go2Controller:
         # cols[k][i] = ∂p_i/∂q_k；转置成 [i][k] 便于 tau_j = Σ_i J[i][j]·f_i
         return tuple((cols[0][i], cols[1][i], cols[2][i]) for i in range(3))
 
+    # 按支撑腿分权重给出重力前馈力矩（执行器顺序）。
+    #
+    # `weights` 是 {腿名: 0~1}，0 表示这条腿在空中、不该顶体重。
+    # 返回 12 维力矩，直接塞进 LowCmd.motor_cmd[i].tau。
+    #
+    # 竖直力按权重归一，总和恒等于体重。 这里是踩过坑的地方：原来每条
+    # 支撑腿固定给 mg/4，四条腿都在地上的站姿没问题，可一进步态就出事 ——
+    # 小跑任意时刻只有两条腿支撑，总前馈只剩 mg/2，另一半体重全靠 kp 的
+    # 静差硬顶。腿被压弯到工作空间底、足端在地上拖，支撑相根本扫不动，
+    # 表现出来就是「腿一直打滑、力气过小」。真机化仿真实测：指令 0.9 只
+    # 跑出 0.10 m/s，关掉前馈反而有 0.29。
+    #
+    # 归一之后，两条腿支撑时各扛 mg/2，单腿支撑时独扛 mg。总竖直力不再随
+    # 支撑腿数量变化，机身在换腿时不会被抽掉一半支撑而往下掉。
+    #
+    # 但分母要夹一个下限 1.0，不能直接除 Σw。 换腿那一瞬间，旧腿的
+    # 权重已经在往 0 掉、新腿的刚从 0 起，Σw 会掉到 0.1 以下 —— 除下去等于
+    # 把 mg 全压给一条刚沾地的腿，力矩瞬间顶满限幅，下一帧又掉回来。实测
+    # 就是这个：步态里 9.6% 的关节帧贴在 12 N·m 的限幅上，机身高度峰峰
+    # 24 mm、角速度 rms 0.65 rad/s，看着就是「一直在颤」。
+    # 夹到 1.0 之后，Σw<1 的时段前馈按比例少给（不足的部分 PD 补），
+    # 不给尖峰。物理上也对：权重 0.15 的腿就是只沾了 15% 的地，凭什么扛
+    # 整个体重。
+    #
+    # 符号是负的，别改成正的。 这里给的是「关节要平衡的足端外力」，
+    # 取负对应"关节在抵抗足端被压下去"。静站实测：tau_ff=+1.0 机身沉
+    # 12 mm、-1.0 升 12 mm —— 正的等于四条腿一起把机身往地里按，PD 的
+    # 静差全花在对抗这个力上，一步一步都在刨地。
+    #
+    # 注意 fk_leg 的 z 是向上为正（站立位 p_z = −0.265），负号不是
+    # 坐标约定的产物，是 τ = −Jᵀ·f 里那个负号。`body_wrench_tau` 是同一
+    # 套约定的通用版本，`gravity_tau` 等于它「只给竖直力、不要求矩」的特例。
     @classmethod
     def gravity_tau(cls, q12, weights: dict) -> np.ndarray:
-        """按支撑腿分权重给出重力前馈力矩（执行器顺序）。
-
-        `weights` 是 {腿名: 0~1}，0 表示这条腿在空中、不该顶体重。
-        返回 12 维力矩，直接塞进 LowCmd.motor_cmd[i].tau。
-
-        **竖直力按权重归一，总和恒等于体重。** 这里是踩过坑的地方：原来每条
-        支撑腿固定给 mg/4，四条腿都在地上的站姿没问题，可一进步态就出事 ——
-        小跑任意时刻只有两条腿支撑，总前馈只剩 mg/2，另一半体重全靠 kp 的
-        静差硬顶。腿被压弯到工作空间底、足端在地上拖，支撑相根本扫不动，
-        表现出来就是「腿一直打滑、力气过小」。真机化仿真实测：指令 0.9 只
-        跑出 0.10 m/s，关掉前馈反而有 0.29。
-
-        归一之后，两条腿支撑时各扛 mg/2，单腿支撑时独扛 mg。总竖直力不再随
-        支撑腿数量变化，机身在换腿时不会被抽掉一半支撑而往下掉。
-
-        **但分母要夹一个下限 1.0，不能直接除 Σw。** 换腿那一瞬间，旧腿的
-        权重已经在往 0 掉、新腿的刚从 0 起，Σw 会掉到 0.1 以下 —— 除下去等于
-        把 mg 全压给一条刚沾地的腿，力矩瞬间顶满限幅，下一帧又掉回来。实测
-        就是这个：步态里 9.6% 的关节帧贴在 12 N·m 的限幅上，机身高度峰峰
-        24 mm、角速度 rms 0.65 rad/s，看着就是「一直在颤」。
-        夹到 1.0 之后，Σw<1 的时段前馈按比例少给（不足的部分 PD 补），
-        不给尖峰。物理上也对：权重 0.15 的腿就是只沾了 15% 的地，凭什么扛
-        整个体重。
-
-        **符号是负的，别改成正的。** 这里给的是「关节要平衡的足端外力」，
-        取负对应"关节在抵抗足端被压下去"。静站实测：tau_ff=+1.0 机身沉
-        12 mm、-1.0 升 12 mm —— 正的等于四条腿一起把机身往地里按，PD 的
-        静差全花在对抗这个力上，一步一步都在刨地。
-
-        注意 fk_leg 的 z 是**向上**为正（站立位 p_z = −0.265），负号不是
-        坐标约定的产物，是 τ = −Jᵀ·f 里那个负号。`body_wrench_tau` 是同一
-        套约定的通用版本，`gravity_tau` 等于它「只给竖直力、不要求矩」的特例。
-        """
         tau = np.zeros(NUM_MOTOR)
         ws = [max(0.0, float(weights.get(leg, 0.0))) for leg in CTRL_LEGS]
         wsum = sum(ws)
@@ -932,68 +922,67 @@ class Go2Controller:
                 tau[3 * i + j] = fz * jt[2][j]
         return tau
 
+    # 机身层的力分配：期望合力 F 与绕机体质心的合力矩 M → 关节力矩。
+    #
+    # `F`、`M` 是地面反力在机体系里的表达（x 前、y 左、z 上，单位 N / N·m）。
+    # 返回 12 维力矩，直接塞 LowCmd.motor_cmd[i].tau。
+    #
+    # ## 为什么要有这一层
+    #
+    # 原来的做法是「位置伺服 + 逐腿竖直力前馈」：承重靠前馈，姿态靠挪
+    # 足端 z 目标。两套指令作用在同一条腿上 —— 位置伺服想把脚钉在轨迹上，
+    # 前馈想把机身顶起来，于是实际出力等于两者之和，谁也不知道地面反力
+    # 到底是多少。腿在这种状态下的刚度是「kp 与地面刚度串联」，真实地面
+    # 软一点就打滑、硬一点就震。真机上「打滑、抬不开腿」有一半来自这里。
+    #
+    # 真机原生的 sportmode 本来就是力矩级的 MPC + WBC，我们这份纯位置伺服
+    # 在控制层级上还不如它。这一层就是把它补回来：先在机身层面定「要多大
+    # 的力、多大的力矩」，再分配到每条腿，最后换成关节力矩。
+    #
+    # ## 分配怎么算
+    #
+    # 不能把「力」和「力矩」合成一个 6×3n 的方程一起解。n=2（对角小跑）
+    # 时那个方程秩只有 5、条件数 2×10⁴ —— 实测解出来的单腿力能到 100 N
+    # 以上、正负乱跳，乘上雅可比就是 80 N·m 的力矩，全被限幅削平。
+    # 根因是它没有单边约束：地面只能推不能拉，而最小二乘会给出「某条腿
+    # 往下拽地面」的解，那在物理上不存在。
+    #
+    # 改成按任务优先级分两步，各自良态：
+    #
+    # 1. 竖直力管承重和俯仰/滚转。总和严格等于 F_z（先按支撑权重分，
+    #    再在 Σdf=0 的零空间里加力矩差额），然后夹到 [0, FZ_MAX]。
+    #    Mx = Σ py·fz、My = −Σ px·fz，力臂只有十几厘米，2 N·m 的力矩
+    #    就对应几十牛的差 —— 姿态环给的力矩必须按这个能力限住，见
+    #    `_wrench_cmd` 里的 `WRENCH_M_MAX`。
+    # 2. 水平力管推进和偏航，逐腿限在摩擦锥 μ·fz 内。
+    #
+    # 这就是四足常用的「虚拟模型控制」：姿态和承重由竖直力，速度由水平力，
+    # 两套解耦，不会互相拽。
+    #
+    # ## 还差什么（决定这套能不能算「力矩控制」）
+    #
+    # 这一层只闭环了 6 维合力和合力矩，力度是 τ = −Jᵀ·F。完整的计算力矩
+    # 控制是 τ = M(q)·q̈_ref + C(q,q̇) + g(q) + Jᵀ·F_ext，缺的两项在这里：
+    #
+    # - 零空间姿态项。−Jᵀ·F 只在支撑腿的「能出力」方向上有定义，腿在
+    #   自己的零空间（膝角与髋角同向转、足端不动的组合）里没人管，会慢慢
+    #   漂。现在的做法是靠外面那圈位置环（`WRENCH_KP_STANCE`）兜住，所以
+    #   kp 不能真的降到 0：实测 0.10 勉强站住，0.05 和 0 前进 5 秒直接翻。
+    #   补 N·τ_posture（N 是接触雅可比的零空间投影）之后，kp 才能继续往下让。
+    # - 逆动力学前馈 M·q̈ + C。现在摆动腿纯靠位置环跟踪，没有惯性/科氏
+    #   补偿，只有重力的静态部分。
+    #
+    # 注意两边都不是「纯开环力矩」：宇树的 WBC 出来也是关节力矩 + 关节级
+    # PD 兜底，真机上模型不准，留一圈小刚度位置环是必须的，不是妥协。
+    #
+    # ## 力矩的符号
+    #
+    # τ = −Jᵀ·f。负号来自平衡关系：地面给足端 +z 的推力，关节必须输出
+    # 反向力矩才不会被压弯。`gravity_tau` 是 M=0、F=(0,0,mg) 的特例，
+    # 两者算出来的数一致（有对拍测试）。
     @classmethod
     def body_wrench_tau(cls, q12, weights: dict, F, M,
                         reg: float = 1e-4) -> np.ndarray:
-        """机身层的力分配：期望合力 F 与绕机体质心的合力矩 M → 关节力矩。
-
-        `F`、`M` 是**地面反力**在机体系里的表达（x 前、y 左、z 上，单位 N / N·m）。
-        返回 12 维力矩，直接塞 LowCmd.motor_cmd[i].tau。
-
-        ## 为什么要有这一层
-
-        原来的做法是「位置伺服 + 逐腿竖直力前馈」：承重靠前馈，姿态靠挪
-        足端 z 目标。两套指令作用在同一条腿上 —— 位置伺服想把脚钉在轨迹上，
-        前馈想把机身顶起来，于是实际出力等于两者之和，谁也不知道地面反力
-        到底是多少。腿在这种状态下的刚度是「kp 与地面刚度串联」，真实地面
-        软一点就打滑、硬一点就震。真机上「打滑、抬不开腿」有一半来自这里。
-
-        真机原生的 sportmode 本来就是力矩级的 MPC + WBC，我们这份纯位置伺服
-        在控制层级上还不如它。这一层就是把它补回来：先在机身层面定「要多大
-        的力、多大的力矩」，再分配到每条腿，最后换成关节力矩。
-
-        ## 分配怎么算
-
-        不能把「力」和「力矩」合成一个 6×3n 的方程一起解。n=2（对角小跑）
-        时那个方程秩只有 5、条件数 2×10⁴ —— 实测解出来的单腿力能到 100 N
-        以上、正负乱跳，乘上雅可比就是 80 N·m 的力矩，全被限幅削平。
-        根因是它没有单边约束：地面只能推不能拉，而最小二乘会给出「某条腿
-        往下拽地面」的解，那在物理上不存在。
-
-        改成按任务优先级分两步，各自良态：
-
-        1. **竖直力**管承重和俯仰/滚转。总和严格等于 F_z（先按支撑权重分，
-           再在 Σdf=0 的零空间里加力矩差额），然后夹到 [0, FZ_MAX]。
-           Mx = Σ py·fz、My = −Σ px·fz，力臂只有十几厘米，2 N·m 的力矩
-           就对应几十牛的差 —— 姿态环给的力矩必须按这个能力限住，见
-           `_wrench_cmd` 里的 `WRENCH_M_MAX`。
-        2. **水平力**管推进和偏航，逐腿限在摩擦锥 μ·fz 内。
-
-        这就是四足常用的「虚拟模型控制」：姿态和承重由竖直力，速度由水平力，
-        两套解耦，不会互相拽。
-
-        ## 还差什么（决定这套能不能算「力矩控制」）
-
-        这一层只闭环了 6 维合力和合力矩，力度是 τ = −Jᵀ·F。完整的计算力矩
-        控制是 τ = M(q)·q̈_ref + C(q,q̇) + g(q) + Jᵀ·F_ext，缺的两项在这里：
-
-        - **零空间姿态项**。−Jᵀ·F 只在支撑腿的「能出力」方向上有定义，腿在
-          自己的零空间（膝角与髋角同向转、足端不动的组合）里没人管，会慢慢
-          漂。现在的做法是靠外面那圈位置环（`WRENCH_KP_STANCE`）兜住，所以
-          kp 不能真的降到 0：实测 0.10 勉强站住，0.05 和 0 前进 5 秒直接翻。
-          补 N·τ_posture（N 是接触雅可比的零空间投影）之后，kp 才能继续往下让。
-        - **逆动力学前馈** M·q̈ + C。现在摆动腿纯靠位置环跟踪，没有惯性/科氏
-          补偿，只有重力的静态部分。
-
-        注意两边都不是「纯开环力矩」：宇树的 WBC 出来也是关节力矩 + 关节级
-        PD 兜底，真机上模型不准，留一圈小刚度位置环是必须的，不是妥协。
-
-        ## 力矩的符号
-
-        τ = −Jᵀ·f。负号来自平衡关系：地面给足端 +z 的推力，关节必须输出
-        反向力矩才不会被压弯。`gravity_tau` 是 M=0、F=(0,0,mg) 的特例，
-        两者算出来的数一致（有对拍测试）。
-        """
         # 只认真正着地的腿。阈值 0.12 而不是 1e-3：支撑权重的窗口前后各有
         # 一段线性过渡，权重 0.01 的腿其实已经离地（或者还没落地），把它算进
         # 分配有两个坏处 —— 一是让空中的腿被要求出力（等于往下踹，落地就是
@@ -1091,16 +1080,15 @@ class Go2Controller:
     # 逆运动学
     # ------------------------------------------------------------------
 
+    # 足端在机体系的位置 → 三个关节角。
+    #
+    # p_body 是足端「body 原点」的位置，不是足底接触点。足底贴地时取
+    # p_body = (x, y, FOOT_RADIUS)。
+    #
+    # 解不出来（超出腿长范围）时，clamp=True 会把目标缩到可达边界并返回
+    # ok=False，让你能画图但仍知道自己越界了。
     @staticmethod
     def ik_leg(leg: str, p_body, clamp=True, check_limits=True) -> IKResult:
-        """足端在机体系的位置 → 三个关节角。
-
-        p_body 是足端「body 原点」的位置，不是足底接触点。足底贴地时取
-        p_body = (x, y, FOOT_RADIUS)。
-
-        解不出来（超出腿长范围）时，clamp=True 会把目标缩到可达边界并返回
-        ok=False，让你能画图但仍知道自己越界了。
-        """
         hx, hy, s = LEG_GEOM[leg]
         px = p_body[0] - hx
         py = p_body[1] - hy
@@ -1165,13 +1153,13 @@ class Go2Controller:
 
         return IKResult(q, ok, reason, clamped)
 
+    # feet_body = {'FL': (x,y,z), ...} → {'FL': IKResult, ...}
     @classmethod
     def ik_all(cls, feet_body: dict, **kw) -> dict:
-        """feet_body = {'FL': (x,y,z), ...} → {'FL': IKResult, ...}"""
         return {leg: cls.ik_leg(leg, feet_body[leg], **kw) for leg in LEGS}
 
+    # 四足落点 → 12 个关节角，按执行器顺序（FR, FL, RR, RL）排列。
     def joint_from_feet(self, feet: dict, strict: bool = True) -> np.ndarray:
-        """四足落点 → 12 个关节角，按执行器顺序（FR, FL, RR, RL）排列。"""
         q = np.zeros(NUM_MOTOR)
         for i, leg in enumerate(CTRL_LEGS):
             r = self.ik_leg(leg, feet[leg])
@@ -1180,8 +1168,8 @@ class Go2Controller:
             q[3 * i: 3 * i + 3] = r.q
         return q
 
+    # 站立姿态的 12 个关节角，按执行器顺序（FR, FL, RR, RL）排列。
     def stand_joint_target(self, height: float | None = None) -> np.ndarray:
-        """站立姿态的 12 个关节角，按执行器顺序（FR, FL, RR, RL）排列。"""
         return self.joint_from_feet(
             self.stand_feet(self.height if height is None else height,
                             self.gait.stance_spread))
@@ -1190,36 +1178,33 @@ class Go2Controller:
     # 足端轨迹
     # ------------------------------------------------------------------
 
+    # 支撑相里足端相对机身的速度，也就是落地瞬间必须匹配到的目标。
+    #
+    # 线速度贡献 -v；偏航给一个绕 z 的切向速度 v = ω × r，r 是足端到机身
+    # 中心的水平位移，所以左前腿和右后腿的切向速度方向相反。
     def stance_velocity(self, leg: str, vx: float, vy: float,
                         yaw_rate: float) -> tuple[float, float]:
-        """支撑相里足端相对机身的速度，也就是落地瞬间必须匹配到的目标。
-
-        线速度贡献 -v；偏航给一个绕 z 的切向速度 v = ω × r，r 是足端到机身
-        中心的水平位移，所以左前腿和右后腿的切向速度方向相反。
-        """
         nx, ny, _ = self.gait.neutral[leg]
         wx = -yaw_rate * ny if abs(yaw_rate) > 1e-12 else 0.0
         wy = yaw_rate * nx if abs(yaw_rate) > 1e-12 else 0.0
         return (-(vx + wx), -(vy + wy))
 
+    # 足端在机体系的水平速度（后向差分，采样点全落在同一相位段内）。
+    #
+    # 只取 x、y —— 竖直方向在落地瞬间本来就是 0，和支撑相的 0 天然一致，
+    # 真正会打滑的是水平分量。
     def foot_velocity(self, leg: str, t: float, vx: float, vy: float,
                       yaw_rate: float, h: float = 1e-7) -> tuple[float, float]:
-        """足端在机体系的水平速度（后向差分，采样点全落在同一相位段内）。
-
-        只取 x、y —— 竖直方向在落地瞬间本来就是 0，和支撑相的 0 天然一致，
-        真正会打滑的是水平分量。
-        """
         p0 = self.foot_target(leg, t - h, vx, vy, yaw_rate)
         p1 = self.foot_target(leg, t, vx, vy, yaw_rate)
         return ((p1[0] - p0[0]) / h, (p1[1] - p0[1]) / h)
 
+    # 在时刻 t，返回该腿足端在机体系的期望位置。
+    #
+    # vx, vy: 机身期望线速度（m/s），vy 正为向左
+    # yaw_rate: 期望偏航角速度（rad/s），正为逆时针
     def foot_target(self, leg: str, t: float, vx: float = 0.0, vy: float = 0.0,
                     yaw_rate: float = 0.0) -> tuple[float, float, float]:
-        """在时刻 t，返回该腿足端在机体系的期望位置。
-
-        vx, vy: 机身期望线速度（m/s），vy 正为向左
-        yaw_rate: 期望偏航角速度（rad/s），正为逆时针
-        """
         gp = self.gait
         nx, ny, _ = gp.neutral[leg]
         ph = (t / gp.period + gp.offsets[leg]) % 1.0
@@ -1439,21 +1424,20 @@ class Go2Controller:
 
     # -- 连接 ----------------------------------------------------------
 
+    # 关掉宇树官方运控（mcf / sport_mode），把 rt/lowcmd 让给我们。
+    #
+    # 这是真机上所有异常的共同前提。 Go2 开机就起 mcf，它自己也在往
+    # `rt/lowcmd` 发关节指令。我们不发 MotionSwitcher 释放，两条指令就在
+    # 同一个 topic 上交替覆盖：下发的 kp=100 能否落地取决于这一帧是谁的，
+    # 实际关节刚度在两者之间来回跳。
+    #
+    # 表现完全对得上实测：膝静差 10° 而 tau_est 只有 6.8 N·m（等效刚度
+    # 只有下发的四成）、站立时 1.2 Hz 的持续抖动（两个控制器的拍频）、
+    # tau_est 帧间跳 4.2 N·m、抬腿跟踪只有三成、怎么调增益都没用。
+    # 仿真里永远复现不了 —— 仿真桥只收发 lowcmd，没有第二个源。
+    #
+    # 返回是否真的释放成功（再查一次模式确认为空）。
     def _release_motion_service(self) -> bool:
-        """关掉宇树官方运控（mcf / sport_mode），把 rt/lowcmd 让给我们。
-
-        **这是真机上所有异常的共同前提。** Go2 开机就起 mcf，它自己也在往
-        `rt/lowcmd` 发关节指令。我们不发 MotionSwitcher 释放，两条指令就在
-        同一个 topic 上交替覆盖：下发的 kp=100 能否落地取决于这一帧是谁的，
-        实际关节刚度在两者之间来回跳。
-
-        表现完全对得上实测：膝静差 10° 而 tau_est 只有 6.8 N·m（等效刚度
-        只有下发的四成）、站立时 1.2 Hz 的持续抖动（两个控制器的拍频）、
-        tau_est 帧间跳 4.2 N·m、抬腿跟踪只有三成、怎么调增益都没用。
-        仿真里永远复现不了 —— 仿真桥只收发 lowcmd，没有第二个源。
-
-        返回是否真的释放成功（再查一次模式确认为空）。
-        """
         if not self.real:
             return False
         # `real` 只是「用真机那套增益」，仿真是 lo0 也会置真。真正的硬件
@@ -1484,8 +1468,8 @@ class Go2Controller:
             print(f"[运控] 释放异常：{e}", flush=True)
             return False
 
+    # 把运控还给官方，否则拔掉我们之后狗一直没人管。
     def _restore_motion_service(self):
-        """把运控还给官方，否则拔掉我们之后狗一直没人管。"""
         if not self._mcf_prev_mode:
             return
         try:
@@ -1500,11 +1484,10 @@ class Go2Controller:
             print(f"[运控] 交还失败：{e}", flush=True)
         self._mcf_prev_mode = ""
 
+    # 初始化 DDS、挂订阅、建发布器，并等第一帧 rt/lowstate。
+    #
+    # 一个进程只能调用一次 ChannelFactoryInitialize；重复调用会抛异常。
     def connect(self, timeout: float = 3.0) -> bool:
-        """初始化 DDS、挂订阅、建发布器，并等第一帧 rt/lowstate。
-
-        一个进程只能调用一次 ChannelFactoryInitialize；重复调用会抛异常。
-        """
         ChannelFactoryInitialize(self.domain, self.iface)
 
         def on_low(msg):
@@ -1565,19 +1548,18 @@ class Go2Controller:
     def connected(self) -> bool:
         return self._pub is not None and self.q is not None
 
+    # 用支撑腿正解反推机身离地高度，写进 `_h_kin`。
+    #
+    # 真机上必须用这一路。sportmodestate 的 z 在被 rt/lowcmd 接管之后就不
+    # 反映真实高度了：实测狗站着 0.303 m，它报 0.248 m，差 5.5 cm。高度环
+    # 拿它当反馈，等于一直认为「还没到目标高度」，于是持续往外给 30 多牛
+    # 的推力 —— 机身被顶得比站姿还高，四条腿在竖直方向上和地面较劲，水平
+    # 方向的推力全被这个静态冲突吃掉，看起来就是脚踩着地、腿在动、机身
+    # 不走，还一直响。
+    #
+    # 只用支撑腿（权重 > 0.12）：摆动腿悬空，它的正解量的是抬腿高度，不是
+    # 机身高度。没有支撑腿就保持上一次的值。
     def _update_kin_height(self):
-        """用支撑腿正解反推机身离地高度，写进 `_h_kin`。
-
-        真机上必须用这一路。sportmodestate 的 z 在被 rt/lowcmd 接管之后就不
-        反映真实高度了：实测狗站着 0.303 m，它报 0.248 m，差 5.5 cm。高度环
-        拿它当反馈，等于一直认为「还没到目标高度」，于是持续往外给 30 多牛
-        的推力 —— 机身被顶得比站姿还高，四条腿在竖直方向上和地面较劲，水平
-        方向的推力全被这个静态冲突吃掉，看起来就是脚踩着地、腿在动、机身
-        不走，还一直响。
-
-        只用支撑腿（权重 > 0.12）：摆动腿悬空，它的正解量的是抬腿高度，不是
-        机身高度。没有支撑腿就保持上一次的值。
-        """
         if self.q is None:
             return
         hs = []
@@ -1596,30 +1578,28 @@ class Go2Controller:
             k = 1.0 / (1.0 + self.CTRL_HZ * 0.04)
             self._h_kin += k * (h - self._h_kin)
 
+    # 机身高度（离地），米。真机用运动学，仿真用状态估计。
+    #
+    # 真机那一路的原因见 `_update_kin_height` 的文档。仿真的 pos[2] 是
+    # 真值，没必要绕。
     def body_height(self) -> float | None:
-        """机身高度（离地），米。真机用运动学，仿真用状态估计。
-
-        真机那一路的原因见 `_update_kin_height` 的文档。仿真的 pos[2] 是
-        真值，没必要绕。
-        """
         if self.real and self._h_kin is not None:
             return self._h_kin
         return None if self.pos is None else float(self.pos[2]) - SPORT_Z_BIAS
 
+    # IMU 加速度积分得到的机体系速度，m/s。没有加速度数据返回 None。
+    #
+    # 为什么需要它：关节里程计算出来的不是机身速度，而是足端在机体系里
+    # 移动多快。不打滑时两者相等；打滑时足端按指令在地上刨，里程计就把
+    # 「指令扫动速度」当成了机身速度 —— 于是机身越滑、估计越快，速度闭环
+    # 以为已经跑够，反而把扫动收小，狗就慢慢停下来。实测 14 秒里估计值比
+    # 真实值高 0.6 m/s，位移从 0.25 m/s 掉到 0。IMU 不受打滑影响。
+    #
+    # 积分必然漂（加速度计零偏），所以它只当「短时基准」，长时的零偏靠
+    # 关节里程计慢修正，见 `body_velocity`。
+    #
+    # a_world = R·f_body + (0,0,−g)（f_body 是比力），积分后转回机体系。
     def _imu_vel(self) -> np.ndarray | None:
-        """IMU 加速度积分得到的**机体系**速度，m/s。没有加速度数据返回 None。
-
-        为什么需要它：关节里程计算出来的不是机身速度，而是**足端在机体系里
-        移动多快**。不打滑时两者相等；打滑时足端按指令在地上刨，里程计就把
-        「指令扫动速度」当成了机身速度 —— 于是机身越滑、估计越快，速度闭环
-        以为已经跑够，反而把扫动收小，狗就慢慢停下来。实测 14 秒里估计值比
-        真实值高 0.6 m/s，位移从 0.25 m/s 掉到 0。IMU 不受打滑影响。
-
-        积分必然漂（加速度计零偏），所以它只当「短时基准」，长时的零偏靠
-        关节里程计慢修正，见 `body_velocity`。
-
-        a_world = R·f_body + (0,0,−g)（f_body 是比力），积分后转回机体系。
-        """
         if len(self.acc) < 3 or not self.rpy:
             return None
         now = time.perf_counter()
@@ -1643,23 +1623,22 @@ class Go2Controller:
             self._v_imu[:] = 0.0
         return R.T @ self._v_imu
 
+    # 实测速度，机体系 (vx, vy, vz)，m/s；拿不到返回 None。
+    #
+    # 三个来源，按可信度从高到低：
+    #
+    # 1. `rt/sportmodestate`（新鲜时）。真机原生的 UKF 状态估计，最准。
+    #    但 lowcmd 接管后这个 topic 就不更新了，只有在 sportmode 还没被顶掉
+    #    时才用得上。注意它是世界系的，按当前 yaw 转回机体系 —— 横移、原地
+    #    转、跳跑的时候，世界系的 vx 和「机身往前跑多快」不是一回事。
+    # 2. IMU 积分。短时可信，打滑也不受影响，缺点是会漂。
+    # 3. 关节里程计。长时无偏，但打滑时测到的其实是指令扫动速度，
+    #    打滑越狠高估越多。
+    #
+    # 所以融合方式是以 IMU 为主、里程计为辅：两者差得不远（< 0.25 m/s）
+    # 时用里程计把 IMU 的漂移慢慢拉回来；差得远说明正在打滑，这时里程计
+    # 是错的，直接不用它。
     def body_velocity(self) -> tuple[float, float, float] | None:
-        """实测速度，**机体系** (vx, vy, vz)，m/s；拿不到返回 None。
-
-        三个来源，按可信度从高到低：
-
-        1. `rt/sportmodestate`（新鲜时）。真机原生的 UKF 状态估计，最准。
-           但 lowcmd 接管后这个 topic 就不更新了，只有在 sportmode 还没被顶掉
-           时才用得上。注意它是世界系的，按当前 yaw 转回机体系 —— 横移、原地
-           转、跳跑的时候，世界系的 vx 和「机身往前跑多快」不是一回事。
-        2. IMU 积分。短时可信，打滑也不受影响，缺点是会漂。
-        3. 关节里程计。长时无偏，但**打滑时测到的其实是指令扫动速度**，
-           打滑越狠高估越多。
-
-        所以融合方式是以 IMU 为主、里程计为辅：两者差得不远（< 0.25 m/s）
-        时用里程计把 IMU 的漂移慢慢拉回来；差得远说明正在打滑，这时里程计
-        是错的，直接不用它。
-        """
         if self.vel is not None and time.time() - self._sport_t < self.SPORT_TIMEOUT:
             yaw = float(self.rpy[2]) if self.rpy else 0.0
             c, s = math.cos(yaw), math.sin(yaw)
@@ -1678,16 +1657,15 @@ class Go2Controller:
             return (float(self._odom_v[0]), float(self._odom_v[1]), 0.0)
         return None
 
+    # 关节里程计：支撑腿足端在世界系静止 → 反推机身速度（机体系）。
+    #
+    # 推导：p_world = b + R·p_body，脚不打滑时左边求导为 0，
+    # 忽略 Ṙ·p_body（低速转动、腿短，这一项比平动小一个量级），
+    # 得 v_body ≈ -Rᵀ·(dp_world/dt)，换到机体系就是 -ṗ_body。
+    #
+    # 关键性质：打滑时足端相对机身几乎不动，ṗ_body 很小，估计出来的速度
+    # 也接近 0 —— 这比「拿指令速度当真值」安全得多，不会越滑越猛。
     def _step_odom(self) -> None:
-        """关节里程计：支撑腿足端在世界系静止 → 反推机身速度（机体系）。
-
-        推导：p_world = b + R·p_body，脚不打滑时左边求导为 0，
-        忽略 Ṙ·p_body（低速转动、腿短，这一项比平动小一个量级），
-        得 v_body ≈ -Rᵀ·(dp_world/dt)，换到机体系就是 -ṗ_body。
-
-        关键性质：打滑时足端相对机身几乎不动，ṗ_body 很小，估计出来的速度
-        也接近 0 —— 这比「拿指令速度当真值」安全得多，不会越滑越猛。
-        """
         if self.q is None:
             return
         now = time.time()
@@ -1764,13 +1742,12 @@ class Go2Controller:
             if h is not None and h > self.peak_z:
                 self.peak_z = h
 
+    # 按当前支撑权重算重力前馈力矩；没开前馈返回 None。
+    #
+    # 算出来的值先过一阶低通再限幅：步态里 q_target 每帧都在动，原始 τ 会
+    # 跟着逐帧跳，叠加到 PD 上就是可听的抖动。限幅是防一条腿被判成全支撑
+    # 时给出远超关节额定的力矩。
     def _tau_ff(self, q_target):
-        """按当前支撑权重算重力前馈力矩；没开前馈返回 None。
-
-        算出来的值先过一阶低通再限幅：步态里 q_target 每帧都在动，原始 τ 会
-        跟着逐帧跳，叠加到 PD 上就是可听的抖动。限幅是防一条腿被判成全支撑
-        时给出远超关节额定的力矩。
-        """
         if not self.tau_ff or q_target is None:
             return None
         # 腿还没到目标附近就先收力。从趴着/阻尼状态往站姿插值的头几帧，
@@ -1800,19 +1777,18 @@ class Go2Controller:
         self._tau += k * (raw - self._tau)
         return np.clip(self._tau, -self.TAU_MAX, self.TAU_MAX)
 
+    # 机身层力矩指令的平滑：一阶低通 + 每帧变化率限制。
+    #
+    # 分配器的输出是「这一帧该出多大力」，它每帧独立解一遍。输入里带着
+    # 陀螺噪声（乘 WRENCH_KD）、竖直速度噪声（乘 WRENCH_DZ）、还有支撑
+    # 权重跨过 0.12 时那条腿从「不参与」变成「参与」的阶跃。这些都不该
+    # 原样进关节 —— 关节后面是减速器，零速附近高频换向就是齿隙撞击，
+    # 听起来是硬摩擦声，而且这些往返力矩全部耗在摩擦上，地面反力反而
+    # 变小，走起来就是「抖着挪、迈不开」。
+    #
+    # 低通管带宽，slew 管单帧幅度，两个都要：低通对阶跃会留一个很陡的
+    # 上升沿，slew 把它压成斜坡。
     def _slew_tau(self, tau):
-        """机身层力矩指令的平滑：一阶低通 + 每帧变化率限制。
-
-        分配器的输出是「这一帧该出多大力」，它每帧独立解一遍。输入里带着
-        陀螺噪声（乘 WRENCH_KD）、竖直速度噪声（乘 WRENCH_DZ）、还有支撑
-        权重跨过 0.12 时那条腿从「不参与」变成「参与」的阶跃。这些都不该
-        原样进关节 —— 关节后面是减速器，零速附近高频换向就是齿隙撞击，
-        听起来是硬摩擦声，而且这些往返力矩全部耗在摩擦上，地面反力反而
-        变小，走起来就是「抖着挪、迈不开」。
-
-        低通管带宽，slew 管单帧幅度，两个都要：低通对阶跃会留一个很陡的
-        上升沿，slew 把它压成斜坡。
-        """
         tau = np.asarray(tau, dtype=float)
         if self._tau_w is None or self._tau_w.shape != tau.shape:
             self._tau_w = tau.copy()
@@ -1825,11 +1801,10 @@ class Go2Controller:
         self._tau_w = out
         return out
 
+    # 速度环输出 → 支撑相步幅，先让它连续。见 EVX_TAU。
+    #
+    # 两段：一阶低通压噪声，逐帧 slew 兜大跳（低通对阶跃会留一个陡沿）。
     def _smooth_ev(self, evx, evy):
-        """速度环输出 → 支撑相步幅，先让它连续。见 EVX_TAU。
-
-        两段：一阶低通压噪声，逐帧 slew 兜大跳（低通对阶跃会留一个陡沿）。
-        """
         k = 1.0 / (1.0 + self.CTRL_HZ * self.EVX_TAU)
         step = self.EVX_SLEW
         out = []
@@ -1843,13 +1818,12 @@ class Go2Controller:
         self._evx_p, self._evy_p = out
         return out[0], out[1]
 
+    # 姿态修正量的逐帧限速，见 STAB_SLEW。
+    #
+    # 俯仰和滚转各存一份上一帧的值。`w_st` 在落地那一帧还会从 0 跳到 1，
+    # 这一层管不住那一下（它是权重不是修正量），但把修正量本身压到 3 mm/帧
+    # 之后，两者相乘的阶跃从 45 mm 降到 3 mm，膝角跳变从 20° 降到 1.5°。
     def _slew_stab(self, val: float, axis: str) -> float:
-        """姿态修正量的逐帧限速，见 STAB_SLEW。
-
-        俯仰和滚转各存一份上一帧的值。`w_st` 在落地那一帧还会从 0 跳到 1，
-        这一层管不住那一下（它是权重不是修正量），但把修正量本身压到 3 mm/帧
-        之后，两者相乘的阶跃从 45 mm 降到 3 mm，膝角跳变从 20° 降到 1.5°。
-        """
         prev = self._dz_p if axis == "z" else self._dr_p
         step = self.STAB_SLEW
         if abs(val - prev) > step:
@@ -1860,13 +1834,12 @@ class Go2Controller:
             self._dr_p = val
         return val
 
+    # 机身竖直速度，米/秒，向上为正。拿不到高度就返回 0。
+    #
+    # 用高度差分而不是 IMU 的 vz：真机 sportmodestate 的速度没有可靠的 z
+    # 分量，而高度我们每帧都在算（`pos[2]` 减去固定偏置）。差分后必须低通，
+    # 200 Hz 下原始差值全是编码器量化噪声。
     def _body_vz(self) -> float:
-        """机身竖直速度，米/秒，向上为正。拿不到高度就返回 0。
-
-        用高度差分而不是 IMU 的 vz：真机 sportmodestate 的速度没有可靠的 z
-        分量，而高度我们每帧都在算（`pos[2]` 减去固定偏置）。差分后必须低通，
-        200 Hz 下原始差值全是编码器量化噪声。
-        """
         h = self.body_height()
         if h is None:
             return 0.0
@@ -1884,31 +1857,30 @@ class Go2Controller:
         self._h_prev, self._h_t = h, now
         return self._vz_filt
 
+    # 期望的机身合力 F（机体系，N）与绕质心的合力矩 M（N·m）。
+    #
+    # `a` 是步态幅度（0~1）。起停时它把反馈项一起收掉，避免站着的时候
+    # 姿态反馈还在推脚 —— 那时候脚在地上，推了就是滑。
+    #
+    # ## F 的三个分量
+    #
+    # - z：体重 + 高度闭环。这一项是「承重」的唯一来源，原来靠 kp
+    #   静差凑，现在直接给。
+    # - x / y：速度误差乘一个刚度当推力。这就是「往前走」的力，原来靠
+    #   足端后扫、靠摩擦传递；有了这一项，脚打滑也不会立刻失去推力。
+    #
+    # ## M 的三个分量
+    #
+    # 角度项给弹簧、角速度项给阻尼，两者都是负反馈：
+    # 低头（pitch>0）要抬头 → 后腿多出力 → M_y > 0 → 取 −Kp·pitch。
+    # 往左滚（roll>0）要右滚 → 左腿多出力 → M_x > 0 → 取 −Kp·roll。
+    # （符号是按 `M = Σ p × f` 推出来的，不是试出来的：前腿 p_x>0，
+    # M_y = −p_x·f_z，前腿出力大则 M_y 为负。）
+    #
+    # 偏航：足端轨迹只能「按指令转」，管不了「不想转却被地面拽着转」。实测
+    # 走直线 5 秒后偏航从 0 漂到 −8°，之后每秒 30° 加速，20 秒时整条狗
+    # 横过来、侧向摩擦把滚转也拽翻。所以另给一路真正的偏航力矩。
     def _wrench_cmd(self, vx: float, vy: float, yaw_cmd: float, a: float):
-        """期望的机身合力 F（机体系，N）与绕质心的合力矩 M（N·m）。
-
-        `a` 是步态幅度（0~1）。起停时它把反馈项一起收掉，避免站着的时候
-        姿态反馈还在推脚 —— 那时候脚在地上，推了就是滑。
-
-        ## F 的三个分量
-
-        - z：体重 + 高度闭环。**这一项是「承重」的唯一来源**，原来靠 kp
-          静差凑，现在直接给。
-        - x / y：速度误差乘一个刚度当推力。这就是「往前走」的力，原来靠
-          足端后扫、靠摩擦传递；有了这一项，脚打滑也不会立刻失去推力。
-
-        ## M 的三个分量
-
-        角度项给弹簧、角速度项给阻尼，两者都是**负反馈**：
-        低头（pitch>0）要抬头 → 后腿多出力 → M_y > 0 → 取 −Kp·pitch。
-        往左滚（roll>0）要右滚 → 左腿多出力 → M_x > 0 → 取 −Kp·roll。
-        （符号是按 `M = Σ p × f` 推出来的，不是试出来的：前腿 p_x>0，
-        M_y = −p_x·f_z，前腿出力大则 M_y 为负。）
-
-        偏航：足端轨迹只能「按指令转」，管不了「不想转却被地面拽着转」。实测
-        走直线 5 秒后偏航从 0 漂到 −8°，之后每秒 30° 加速，20 秒时整条狗
-        横过来、侧向摩擦把滚转也拽翻。所以另给一路真正的偏航力矩。
-        """
         gp = self.gait
         if not gp.wrench:
             return None
@@ -1975,13 +1947,12 @@ class Go2Controller:
         return ((Fx * weight, Fy * weight, mg + (Fz - mg) * weight),
                 (Mx * weight, My * weight, Mz * weight))
 
+    # 控制回路的节奏，单位毫秒：均值 / p95 / 最大 / 超过 1.5 倍周期的次数。
+    #
+    # 标称周期是 1000/CTRL_HZ（200 Hz 就是 5 ms）。真机「腿在颤、电机啸叫」
+    # 先看这里：均值明显大于标称说明回路跑不动，max 一大截说明有 GC 或
+    # 调度暂停，这两种都是参数调不好的，得先修时序。
     def loop_stats(self) -> dict:
-        """控制回路的节奏，单位毫秒：均值 / p95 / 最大 / 超过 1.5 倍周期的次数。
-
-        标称周期是 1000/CTRL_HZ（200 Hz 就是 5 ms）。真机「腿在颤、电机啸叫」
-        先看这里：均值明显大于标称说明回路跑不动，max 一大截说明有 GC 或
-        调度暂停，这两种都是参数调不好的，得先修时序。
-        """
         if not self._tick_dts:
             return dict(n=0, mean=0.0, p95=0.0, max=0.0, over=0,
                         nominal=1000.0 / self.CTRL_HZ)
@@ -1995,8 +1966,8 @@ class Go2Controller:
                     over=sum(1 for x in d if x > lim),
                     nominal=1000.0 / self.CTRL_HZ)
 
+    # 播放姿态序列的一段：插值 → 保持 → 下一段，全在回路里做，不占调用方。
     def _pose_tick(self):
-        """播放姿态序列的一段：插值 → 保持 → 下一段，全在回路里做，不占调用方。"""
         with self._seq_lock:
             p = self._pose
             t = time.time() - p["t0"]
@@ -2048,8 +2019,8 @@ class Go2Controller:
         self._pub.Write(self._cmd)
         self._last_pub = np.array(q_target, dtype=float)
 
+    # 把腿变成阻尼器。直接停发会让 ctrl 停在最后一帧，腿是僵的。
     def damping(self, kd: float = 4.0, repeats: int = 10):
-        """把腿变成阻尼器。直接停发会让 ctrl 停在最后一帧，腿是僵的。"""
         if self._pub is None:
             return
         self._mode = "idle"
@@ -2062,13 +2033,12 @@ class Go2Controller:
             self._pub.Write(self._cmd)
             time.sleep(0.01)
 
+    # 停回路并阻尼。可重复调用；之后还能再调动作，回路会自己重启。
+    #
+    # park=True 时先让子对象（高层）执行 StandDown 蹲到底，再从低处松腿。
+    # 仿真桥把 rt/lowcmd 直接算成力矩，不发就没有力矩，从 27 cm 站立高度
+    # 直接松腿会把腿甩到限位。
     def shutdown(self, park: bool = False):
-        """停回路并阻尼。可重复调用；之后还能再调动作，回路会自己重启。
-
-        park=True 时先让子对象（高层）执行 StandDown 蹲到底，再从低处松腿。
-        仿真桥把 rt/lowcmd 直接算成力矩，不发就没有力矩，从 27 cm 站立高度
-        直接松腿会把腿甩到限位。
-        """
         if park and self.connected and self._mode != "idle":
             try:
                 self.high_level.StandDown()
@@ -2084,8 +2054,8 @@ class Go2Controller:
 
     # -- 姿态 ----------------------------------------------------------
 
+    # 保持一个关节角目标不动（默认保持当前实测姿态）。
     def hold(self, q: np.ndarray | None = None):
-        """保持一个关节角目标不动（默认保持当前实测姿态）。"""
         self.require_connection()
         self._ensure_loop()
         self._hold_q = (self.q.copy() if q is None
@@ -2093,17 +2063,16 @@ class Go2Controller:
         self._mode = "hold"
         self._publish(self._hold_q)
 
+    # 排一段姿态序列，排完立即返回，由 200 Hz 回路一段段播。
+    #
+    # steps 是 [(关节目标, 插值时长, 保持时长), ...]。这是「动作连贯」的关键：
+    # 动作不再用 sleep 等自己演完，主循环照常跑（按键、遥测都不卡）。新序列
+    # 直接顶掉正在播的旧序列，并且从当前实测关节角接着走，所以随时能打断、
+    # 接上另一个动作，中间不会跳。
+    #
+    # z0 给了就在序列播完时打印峰值高度，跳跃靠它量离地多少。
     def pose_sequence(self, steps, label: str = "",
                       z0: float | None = None) -> None:
-        """排一段姿态序列，**排完立即返回**，由 200 Hz 回路一段段播。
-
-        steps 是 [(关节目标, 插值时长, 保持时长), ...]。这是「动作连贯」的关键：
-        动作不再用 sleep 等自己演完，主循环照常跑（按键、遥测都不卡）。新序列
-        直接顶掉正在播的旧序列，并且**从当前实测关节角接着走**，所以随时能打断、
-        接上另一个动作，中间不会跳。
-
-        z0 给了就在序列播完时打印峰值高度，跳跃靠它量离地多少。
-        """
         self.require_connection()
         self._ensure_loop()
         with self._seq_lock:
@@ -2117,33 +2086,32 @@ class Go2Controller:
             self._mode = "pose"
             self._next_step()
 
+    # 腿正被一段姿态序列占用（跳跃、蹲伏这类）。此时别往下发速度指令。
     @property
     def busy(self) -> bool:
-        """腿正被一段姿态序列占用（跳跃、蹲伏这类）。此时别往下发速度指令。"""
         return self._mode == "pose"
 
+    # 等当前序列播完。阻塞版动作用它，键盘那条路不用。
     def wait_idle(self, timeout: float = 5.0) -> bool:
-        """等当前序列播完。阻塞版动作用它，键盘那条路不用。"""
         t0 = time.time()
         while self._mode == "pose" and time.time() - t0 < timeout:
             time.sleep(0.01)
         return self._mode != "pose"
 
+    # 把 12 个关节角平滑移过去，移到位才返回（阻塞版）。
+    #
+    # duration 不给就按最快关节的行程自动算（默认限 2.5 rad/s）。
+    # 要不阻塞的，用 apply_pose_async()。
     def apply_pose(self, q_target, duration: float | None = None,
                    hold_s: float = 0.3, qdot_max: float = 2.5) -> float:
-        """把 12 个关节角平滑移过去，**移到位才返回**（阻塞版）。
-
-        duration 不给就按最快关节的行程自动算（默认限 2.5 rad/s）。
-        要不阻塞的，用 apply_pose_async()。
-        """
         duration = self.apply_pose_async(q_target, duration=duration,
                                          hold_s=hold_s, qdot_max=qdot_max)
         self.wait_idle(timeout=duration + hold_s + 5.0)
         return duration
 
+    # 排一段插值就返回。返回这段的时长。
     def apply_pose_async(self, q_target, duration: float | None = None,
                          hold_s: float = 0.0, qdot_max: float = 2.5) -> float:
-        """排一段插值就返回。返回这段的时长。"""
         to = np.asarray(q_target, dtype=float)
         if duration is None:
             duration = max(0.45, float(np.abs(to - self.q).max()) / qdot_max)
@@ -2166,8 +2134,8 @@ class Go2Controller:
                      f"{self.rpy[2]:+.2f}]")
         return line
 
+    # 保持当前模式，按秒打印，到点返回。
     def _watch(self, duration: float, period: float = 1.0) -> None:
-        """保持当前模式，按秒打印，到点返回。"""
         p0 = self.pos.copy() if self.pos is not None else None
         next_print = 0.0
         while True:
@@ -2186,8 +2154,8 @@ class Go2Controller:
     # 站立与步态
     # ------------------------------------------------------------------
 
+    # 从当前（通常瘫倒的）姿态插到站立姿态并保持，不阻尼。
     def stand(self, duration: float = 30.0, ramp: float = 0.8) -> bool:
-        """从当前（通常瘫倒的）姿态插到站立姿态并保持，不阻尼。"""
         self.require_connection()
         q_stand = self.stand_joint_target()
         print(f"起立：首帧 q={np.round(self.q, 3).tolist()}")
@@ -2209,21 +2177,20 @@ class Go2Controller:
             print("没站起来。加大 kp，或确认仿真器真的收到了 rt/lowcmd。")
         return up
 
+    # 按固定时长开环小跑。
+    #
+    # 开环意味着打滑 30~45%，实际位移约是「指令速度 × 时间」的 55~70%。
+    # 要「走两米」这种准确结果，用 high_level.forward()，它拿里程计闭环。
     def trot(self, vx: float = 0.3, vy: float = 0.0, yaw: float = 0.0,
              duration: float = 8.0, ramp: float = 0.8,
              gait_ramp: float = 0.6) -> dict:
-        """按固定时长开环小跑。
-
-        开环意味着打滑 30~45%，实际位移约是「指令速度 × 时间」的 55~70%。
-        要「走两米」这种准确结果，用 high_level.forward()，它拿里程计闭环。
-        """
         return self._run_gait(vx=vx, vy=vy, yaw=yaw, ramp=ramp,
                               gait_ramp=gait_ramp, timeout=ramp + duration)
 
+    # 跑到 done() 返回 True 就收步，最多 timeout 秒。
     def trot_until(self, done, timeout: float, vx: float = 0.3,
                    vy: float = 0.0, yaw: float = 0.0, ramp: float = 0.8,
                    gait_ramp: float = 0.6) -> dict:
-        """跑到 done() 返回 True 就收步，最多 timeout 秒。"""
         return self._run_gait(vx=vx, vy=vy, yaw=yaw, ramp=ramp,
                               gait_ramp=gait_ramp, done=done, timeout=timeout)
 
@@ -2235,12 +2202,11 @@ class Go2Controller:
         "bio": "仿生（横向序列疾驰）",
     }
 
+    # 换运动步态（`mech` 机械 / `bio` 仿生），返回换完之后的那个。
+    #
+    # 跑着也能换：`foot_target()` 每帧都读 `self.gait`，下一帧就按新相位走。
+    # 相位会跳一下（两条腿的相位对上/对不上变了），换的时候会顿一顿，正常。
     def set_gait_style(self, style: str) -> str:
-        """换运动步态（`mech` 机械 / `bio` 仿生），返回换完之后的那个。
-
-        跑着也能换：`foot_target()` 每帧都读 `self.gait`，下一帧就按新相位走。
-        相位会跳一下（两条腿的相位对上/对不上变了），换的时候会顿一顿，正常。
-        """
         style = _GAIT_ALIASES.get(style, style)
         if style not in self.GAIT_STYLES:
             raise ValueError(f"没有这种运动步态：{style}，只有 {self.GAIT_STYLES}")
@@ -2259,14 +2225,13 @@ class Go2Controller:
     def gait_style_label(self) -> str:
         return self.GAIT_STYLE_NAMES[self.gait_style]
 
+    # 步态主循环：起立 → 跑 → 幅度收到 0 → 站定在 hold。
+    #
+    # 收步不是「停发指令」，而是把轨迹幅度 a 从 1 渐收 0：足端回到中立位，
+    # 机身高度自然回到站立值。直接停发会掉在地上。
     def _run_gait(self, vx=0.0, vy=0.0, yaw=0.0, ramp=0.8, gait_ramp=0.6,
                   stop_ramp=0.45, hold_s=0.35, done=None, timeout=None,
                   report=1.0) -> dict:
-        """步态主循环：起立 → 跑 → 幅度收到 0 → 站定在 hold。
-
-        收步不是「停发指令」，而是把轨迹幅度 a 从 1 渐收 0：足端回到中立位，
-        机身高度自然回到站立值。直接停发会掉在地上。
-        """
         self.require_connection()
         gp = self.gait
         print(f"步态 周期 {gp.period:.2f}s 支撑 {gp.stance_time:.2f}s "
@@ -2380,12 +2345,11 @@ class Go2Controller:
 
         self._gait_feet_publish(g, tg, a, g["vx"], g["vy"], g["yaw"])
 
+    # 速度伺服：目标速度来自 set_velocity()，加速度在这里限幅。
+    #
+    # 原生 SportClient.Move 是「发一次就保持」的语义，所以这里没有终点：
+    # 速度归零后幅度 a 收到 0，才切回 hold。
     def _vel_tick(self, g, tg):
-        """速度伺服：目标速度来自 set_velocity()，加速度在这里限幅。
-
-        原生 SportClient.Move 是「发一次就保持」的语义，所以这里没有终点：
-        速度归零后幅度 a 收到 0，才切回 hold。
-        """
         dt = (tg - g["last_t"]) if g["last_t"] else 1.0 / self.CTRL_HZ
         dt = min(max(dt, 1e-3), 0.05)
         g["last_t"] = tg
@@ -2418,16 +2382,15 @@ class Go2Controller:
 
         self._gait_feet_publish(g, tg, g["a"], *g["vel"])
 
+    # 把「足端轨迹 × 幅度 a + 中立位」解成关节角并下发。
+    #
+    # a=0 时足端就在中立位，等价于站姿，所以起停都靠插值 a 完成，不切换模式。
+    #
+    # 跳跑（bound）还要在这里叠一个机身俯仰摆动：脚落点不动、机身跟着节奏点
+    # 头/抬头，狗跑起来就是这个样子。俯仰按足端做旋转等价于机身转过去，与
+    # `feet_for_body_pose()` 同一套约定（正=低头）。
     def _gait_feet_publish(self, g, tg, a: float, vx: float, vy: float,
                            yaw: float):
-        """把「足端轨迹 × 幅度 a + 中立位」解成关节角并下发。
-
-        a=0 时足端就在中立位，等价于站姿，所以起停都靠插值 a 完成，不切换模式。
-
-        跳跑（bound）还要在这里叠一个机身俯仰摆动：脚落点不动、机身跟着节奏点
-        头/抬头，狗跑起来就是这个样子。俯仰按足端做旋转等价于机身转过去，与
-        `feet_for_body_pose()` 同一套约定（正=低头）。
-        """
         gp = self.gait
         if a < 0.1:
             # 起停阶段机身基本没动，把 IMU 积分的漂移清掉，别带进下一段。
@@ -2702,18 +2665,17 @@ class Go2Controller:
     # 速度伺服（对应原生 Move / StopMove）
     # ------------------------------------------------------------------
 
+    # 进入速度伺服模式：没有终点，一直跑，直到 stop_velocity()。
+    #
+    # trot() 是「跑固定时长」，这个是「听命令跑」，对应原生 SportClient。
+    #
+    # ramp 是「从当前姿态爬到站姿」的时间。已经站着的时候按最大关节偏差算，
+    # 差值小就直接跳过 —— 否则每次动作完再起步都要白等 0.8 秒，看起来像卡住。
+    #
+    # vel0 是起步速度，不给就用上次速度伺服的实际值：跳跃把步态顶掉之后，
+    # 落地那一帧要接着原来的速度跑，而不是从 0 重新加速。
     def start_velocity(self, ramp: float = 0.8, gait_ramp: float = 0.35,
                        vel0=None) -> None:
-        """进入速度伺服模式：没有终点，一直跑，直到 stop_velocity()。
-
-        trot() 是「跑固定时长」，这个是「听命令跑」，对应原生 SportClient。
-
-        ramp 是「从当前姿态爬到站姿」的时间。已经站着的时候按最大关节偏差算，
-        差值小就直接跳过 —— 否则每次动作完再起步都要白等 0.8 秒，看起来像卡住。
-
-        vel0 是起步速度，不给就用上次速度伺服的实际值：跳跃把步态顶掉之后，
-        落地那一帧要接着原来的速度跑，而不是从 0 重新加速。
-        """
         self.require_connection()
         q_stand = self.stand_joint_target()
         if self.q is not None:
@@ -2743,30 +2705,30 @@ class Go2Controller:
         self._mode = "gait"
         self._ensure_loop()
 
+    # 只改目标速度，不改相位；实际加速度由 200 Hz 回路限住。
     def set_velocity(self, vx: float = 0.0, vy: float = 0.0,
                      yaw: float = 0.0) -> None:
-        """只改目标速度，不改相位；实际加速度由 200 Hz 回路限住。"""
         if not (self._gait and self._gait.get("stream")):
             raise RuntimeError("先 start_velocity()")
         self._vel_target = [float(vx), float(vy), float(yaw)]
 
+    # 目标速度归零。收步是渐进的，本调用立即返回。
     def stop_velocity(self) -> None:
-        """目标速度归零。收步是渐进的，本调用立即返回。"""
         self._vel_target = [0.0, 0.0, 0.0]
 
     def velocity_active(self) -> bool:
         g = self._gait
         return bool(g and g.get("stream") and self._mode == "gait")
 
+    # 当前实际速度（已过加速度限幅）。不在速度伺服里就是 0。
     def velocity_command(self) -> tuple[float, float, float]:
-        """当前实际速度（已过加速度限幅）。不在速度伺服里就是 0。"""
         g = self._gait
         if not (g and g.get("stream")) or self._mode != "gait":
             return (0.0, 0.0, 0.0)
         return tuple(g["vel"])
 
+    # 当前实际加速度 m/s²、rad/s²。跳跃继承速度时要用它算前飞距离。
     def velocity_accel(self) -> tuple[float, float, float]:
-        """当前实际加速度 m/s²、rad/s²。跳跃继承速度时要用它算前飞距离。"""
         g = self._gait
         if not (g and g.get("stream")) or self._mode != "gait":
             return (0.0, 0.0, 0.0)
@@ -2776,8 +2738,8 @@ class Go2Controller:
     # 遥测
     # ------------------------------------------------------------------
 
+    # 只读模式：不发任何指令，确认 DDS 通不通、频率对不对。
     def telemetry(self, duration: float = 5.0) -> int:
-        """只读模式：不发任何指令，确认 DDS 通不通、频率对不对。"""
         self.require_connection()
         f0, t0 = self.frames, time.time()
         time.sleep(duration)
@@ -2805,13 +2767,12 @@ class Go2Controller:
     # 自检：不碰 DDS，不需要仿真器
     # ==================================================================
 
+    # 用 MuJoCo 当第三方裁判校验运动学，再校验步态。
+    #
+    # FK 和 IK 都是我写的两份实现，它们自洽不代表正确 —— 如果两个公式共用
+    # 同一个错误假设（比如关节轴方向搞反），往返测试照样全过。所以必须拿
+    # mj_kinematics 的 xpos 做独立参照。
     def selftest(self) -> bool:
-        """用 MuJoCo 当第三方裁判校验运动学，再校验步态。
-
-        FK 和 IK 都是我写的两份实现，它们自洽不代表正确 —— 如果两个公式共用
-        同一个错误假设（比如关节轴方向搞反），往返测试照样全过。所以必须拿
-        mj_kinematics 的 xpos 做独立参照。
-        """
         import mujoco
 
         m = mujoco.MjModel.from_xml_path(MODEL_PATH)
@@ -2841,8 +2802,8 @@ class Go2Controller:
         print("  运动学可用" if kin_ok else "  ✗ 运动学误差偏大，检查连杆参数")
         return kin_ok and gait_ok
 
+    # 最容易手算的一步：home 关键帧的足端位置，IK 必须解回同一组关节角。
     def _check_home(self) -> float:
-        """最容易手算的一步：home 关键帧的足端位置，IK 必须解回同一组关节角。"""
         print("=== 0. home 关键帧自洽（q1=0 才算对）===")
         worst = 0.0
         for leg in LEGS:
@@ -2897,8 +2858,8 @@ class Go2Controller:
         print(f"  足端落点最大误差 {worst * 1000:.4f} mm")
         return worst
 
+    # 静态动作（蹲、俯仰、重心平移）的落点必须都能解出来，且留有余量。
     def _check_body_pose(self) -> bool:
-        """静态动作（蹲、俯仰、重心平移）的落点必须都能解出来，且留有余量。"""
         print("\n=== 3. 姿态动作可达性 ===")
         cases = [("蹲 8cm", dict(height=self.height - 0.08)),
                  ("蹲到底", dict(height=MIN_HEIGHT)),
@@ -2915,8 +2876,8 @@ class Go2Controller:
             print(f"  {name:<14}{'✓' if not bad else '✗'}{detail}")
         return ok_all
 
+    # 落地速度匹配、切相连续性、摆动峰值速度、关节角速度、IK 可行性。
     def _check_gait(self, rate: float = 4000.0) -> bool:
-        """落地速度匹配、切相连续性、摆动峰值速度、关节角速度、IK 可行性。"""
         print("\n=== 4. 步态轨迹校验 ===")
         gp = self.gait
         ok_all = True

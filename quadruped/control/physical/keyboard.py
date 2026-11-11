@@ -269,7 +269,7 @@ class GlobalKeys:
 
     live = True
 
-    # 前台是这些应用时才吃按键。**认 bundle id，不认显示名** —— localizedName
+    # 前台是这些应用时才吃按键。认 bundle id，不认显示名 —— localizedName
     # 跟着系统语言变，中文 macOS 上 Terminal.app 叫「终端」，拿英文名去比永远不中，
     # 结果就是监听装着却一个键都不响应。
     TERMINAL_BUNDLES = {
@@ -334,9 +334,9 @@ class GlobalKeys:
             raise RuntimeError("键盘监听没起来（多半是没给「输入监控」权限）")
         self._mute_tty()
 
+    # 关掉终端回显。按键已经被监听见了，再回显只会糊在状态行上，
+    # 还会把字符堆进 tty 输入缓冲，等下谁读 stdin 就一口吃进去。
     def _mute_tty(self) -> None:
-        """关掉终端回显。按键已经被监听见了，再回显只会糊在状态行上，
-        还会把字符堆进 tty 输入缓冲，等下谁读 stdin 就一口吃进去。"""
         if not sys.stdin.isatty():
             return
         try:
@@ -391,8 +391,8 @@ class GlobalKeys:
     def pump(self, timeout: float) -> None:
         time.sleep(timeout)         # 监听在后台线程，主循环只管睡
 
+    # 前台是不是终端 / IDE。0.25 秒查一次，别每帧都问系统。
     def front_ok(self) -> bool:
-        """前台是不是终端 / IDE。0.25 秒查一次，别每帧都问系统。"""
         if not self._only_terminal:
             return True
         now = time.monotonic()
@@ -414,9 +414,9 @@ class GlobalKeys:
         self._front_ok = self.is_terminal_app(bundle, name)
         return self._front_ok
 
+    # bundle id 命中白名单就放行；没命中再看显示名（新终端不至于被一刀切）。
     @classmethod
     def is_terminal_app(cls, bundle: str, name: str) -> bool:
-        """bundle id 命中白名单就放行；没命中再看显示名（新终端不至于被一刀切）。"""
         if bundle and bundle in cls.TERMINAL_BUNDLES:
             return True
         low = (name or "").lower()
@@ -450,8 +450,8 @@ class GlobalKeys:
         with self._lock:
             return name in self._down
 
+    # 按下过多少次方向键。看总数而不是看「此刻按着」，短按也不会漏。
     def dir_presses(self) -> int:
-        """按下过多少次方向键。看总数而不是看「此刻按着」，短按也不会漏。"""
         with self._lock:
             return self._dir_presses
 
@@ -465,8 +465,8 @@ class GlobalKeys:
             self._tty_saved = None
 
 
+# 按 --keys 选按键源。auto：能用全局就用，不行退回终端。
 def make_keys(mode: str, anywhere: bool = False):
-    """按 --keys 选按键源。auto：能用全局就用，不行退回终端。"""
     if mode in ("auto", "global"):
         try:
             return GlobalKeys(only_terminal=not anywhere)
@@ -497,9 +497,9 @@ class Controller:
             return True
         return False
 
+    # active 给了就按它算（全局监听：当前按着的那几个键）；
+    # 不给就用 deadline 里的意图（终端模式）。
     def target(self, now: float, active=None):
-        """active 给了就按它算（全局监听：当前按着的那几个键）；
-        不给就用 deadline 里的意图（终端模式）。"""
         if active is None:
             active = [k for k in DIRS if self.deadline[k] > now]
         tx = ty = tz = 0.0
@@ -598,8 +598,8 @@ def render(vx: float, vy: float, vyaw: float, max_lin: float, active: str,
     )
 
 
+# 走一段：加速到位、保持 duration、再减速到 0。返回本段实际发过的峰值线速度。
 def run_segment(client, ctrl: "Controller", key: str, duration: float) -> float:
-    """走一段：加速到位、保持 duration、再减速到 0。返回本段实际发过的峰值线速度。"""
     dx, dy, dz = DIRS[key]
     tx, ty, tz = dx * ctrl.max_lin, dy * ctrl.max_lin, dz * ctrl.max_ang
     peak = 0.0
@@ -634,8 +634,8 @@ def run_segment(client, ctrl: "Controller", key: str, duration: float) -> float:
     return peak
 
 
+# 给只按行转发输入的终端（IDEA Run 控制台）用的指令模式。返回峰值线速度。
 def line_control(backend, ctrl: "Controller") -> float:
-    """给只按行转发输入的终端（IDEA Run 控制台）用的指令模式。返回峰值线速度。"""
     client = backend.client if backend is not None else None
     print(LINE_HELP)
     peak = 0.0
@@ -709,8 +709,8 @@ def line_control(backend, ctrl: "Controller") -> float:
     return peak
 
 
+# argv 为 None 时读 sys.argv；启动器直接调用本函数传参。
 def main(argv=None) -> int:
-    """argv 为 None 时读 sys.argv；启动器直接调用本函数传参。"""
     ap = argparse.ArgumentParser(description="键盘遥控 Go2（官方 SportClient / 自研高层控制器）")
     add_endpoint_args(ap)                # --iface / --preset / --domain / --client
     ap.add_argument("--max-speed", type=float, default=0.4, help="最大线速度 m/s，默认 0.4")
@@ -862,12 +862,11 @@ def main(argv=None) -> int:
         if log.f:
             print(f"会话日志: {args.log}")
 
+        # 一次性动作：交给后端，发完就返回。
+        #
+        # 所有动作都不阻塞 —— 跳、蹲、起立的序列在控制回路里播，主循环照常
+        # 20 Hz 跑。所以跳着的时候还能按别的键，落地那一下该走的方向已经接上了。
         def dispatch(name: str) -> None:
-            """一次性动作：交给后端，**发完就返回**。
-
-            所有动作都不阻塞 —— 跳、蹲、起立的序列在控制回路里播，主循环照常
-            20 Hz 跑。所以跳着的时候还能按别的键，落地那一下该走的方向已经接上了。
-            """
             nonlocal crouched, stopped
             if name == "loco_gait":
                 if backend is None:

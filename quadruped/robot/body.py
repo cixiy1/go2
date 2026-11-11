@@ -76,37 +76,36 @@ class Go2Robot:
 
     # -- 网卡 → 环境 ----------------------------------------------------
 
+    # 这个环境能用的控制端，顺序即菜单顺序。
     @classmethod
     def clients_for(cls, preset: str) -> tuple[str, ...]:
-        """这个环境能用的控制端，顺序即菜单顺序。"""
         return cls.CLIENTS[preset]
 
+    # 回环网卡：macOS 叫 lo0，Linux 叫 lo。
     @staticmethod
     def is_loopback(iface: str) -> bool:
-        """回环网卡：macOS 叫 lo0，Linux 叫 lo。"""
         return iface == "lo" or iface.startswith("lo")
 
     @classmethod
     def preset_for_iface(cls, iface: str) -> str:
         return "sim" if cls.is_loopback(iface) else "real"
 
+    # 本机是否真有这块网卡（拔了网卡、名字写错都会 False）。
     @staticmethod
     def interface_exists(iface: str) -> bool:
-        """本机是否真有这块网卡（拔了网卡、名字写错都会 False）。"""
         return iface in {name for _, name in socket.if_nameindex()}
 
     # 只保留可能接机器人的网卡，其它（虚拟隧道、无线直连、网桥）都是噪音。
     _IFACE_SKIP = ("awdl", "llw", "utun", "gif", "stf", "bridge",
                    "ap", "anpi", "vmenet", "p2p")
 
+    # 本机的物理网卡清单，含 IPv4 与是否激活。
+    #
+    # 用 ifconfig 而不是 ioctl：macOS 的 ifreq 布局和 Linux 不一样，
+    # ioctl 拿地址得写两套；ifconfig 两边输出格式足够接近，解析一遍就够。
+    # 拿不到就返回空表，调用方退回预设值。
     @classmethod
     def list_ifaces(cls) -> list[dict]:
-        """本机的物理网卡清单，含 IPv4 与是否激活。
-
-        用 ifconfig 而不是 ioctl：macOS 的 ifreq 布局和 Linux 不一样，
-        ioctl 拿地址得写两套；ifconfig 两边输出格式足够接近，解析一遍就够。
-        拿不到就返回空表，调用方退回预设值。
-        """
         try:
             text = subprocess.check_output(
                 ["ifconfig", "-a"], text=True, stderr=subprocess.DEVNULL,
@@ -132,19 +131,18 @@ class Go2Robot:
         return [b for b in blocks
                 if not b["name"].startswith(cls._IFACE_SKIP)]
 
+    # Unitree 机器人的网段是 192.168.123.x，选网口时把它排前面。
     @staticmethod
     def is_real_robot_net(ip: str) -> bool:
-        """Unitree 机器人的网段是 192.168.123.x，选网口时把它排前面。"""
         return ip.startswith("192.168.123.")
 
+    # 仿真器实际绑的网卡与域号 —— 直接读它的 config.py，不靠约定猜。
+    #
+    # 仿真器是 unitree_mujoco 那一套，配置在 simulate_python/config.py 的
+    # DOMAIN_ID / INTERFACE 两行。有人把 INTERFACE 改成 en0、或把 DOMAIN_ID
+    # 换成 3，这里读到的就是新的值，控制端不用跟着改代码。
     @classmethod
     def sim_network(cls) -> dict:
-        """仿真器实际绑的网卡与域号 —— 直接读它的 config.py，不靠约定猜。
-
-        仿真器是 unitree_mujoco 那一套，配置在 simulate_python/config.py 的
-        DOMAIN_ID / INTERFACE 两行。有人把 INTERFACE 改成 en0、或把 DOMAIN_ID
-        换成 3，这里读到的就是新的值，控制端不用跟着改代码。
-        """
         global _SIM_NET
         if _SIM_NET is not None:
             return _SIM_NET
@@ -163,22 +161,21 @@ class Go2Robot:
         _SIM_NET = cfg                         # 缓存，别每次都读盘
         return _SIM_NET
 
+    # 把「网卡 / 预设 / 域号」三者归一到具体连接参数。
+    #
+    # 判定顺序：显式 domain 最高，其次显式 preset，最后由网卡推断。
+    #
+    # - 网卡等于仿真器配置里的 INTERFACE → 仿真，域号取它的 DOMAIN_ID
+    # - 网卡是回环（lo0 / lo）→ 仿真，哪怕配置被改过（回环上没有真狗）
+    # - 其它网卡 → 真机，域号 0
+    # - 什么都不给 → 仿真器配置里的那套
+    #
+    # 「仿真与否」的事实依据其实是 域号：仿真器发布在 DOMAIN_ID 上，真机
+    # 发布在 0 上。网卡只是用来选，所以这里优先按仿真器自己的配置去认，认不
+    # 出来才退回回环这条例外规则。
     @classmethod
     def resolve(cls, preset: str | None = None, *, domain: int | None = None,
                 iface: str | None = None) -> dict:
-        """把「网卡 / 预设 / 域号」三者归一到具体连接参数。
-
-        判定顺序：显式 domain 最高，其次显式 preset，最后由网卡推断。
-
-        - 网卡等于仿真器配置里的 INTERFACE → 仿真，域号取它的 DOMAIN_ID
-        - 网卡是回环（lo0 / lo）→ 仿真，哪怕配置被改过（回环上没有真狗）
-        - 其它网卡 → 真机，域号 0
-        - 什么都不给 → 仿真器配置里的那套
-
-        「仿真与否」的事实依据其实是 **域号**：仿真器发布在 DOMAIN_ID 上，真机
-        发布在 0 上。网卡只是用来选，所以这里优先按仿真器自己的配置去认，认不
-        出来才退回回环这条例外规则。
-        """
         sim = cls.sim_network()
         if preset is None:
             if iface is None:
@@ -203,7 +200,7 @@ class Go2Robot:
         cfg = self.resolve(preset, domain=domain, iface=iface)
         self.preset = cfg["preset"]
         self.clients = self.clients_for(self.preset)     # 本环境可用的控制端
-        # 唯一子对象。控制参数**默认两边同一套**（真机那一套），不按环境分叉：
+        # 唯一子对象。控制参数默认两边同一套（真机那一套），不按环境分叉：
         # 仿真器那边已经把 Go2 真机的关节摩擦、力带宽、编码器噪声、指令延迟
         # 都建进去了（见 simulate_python/config.py 的 REALISM 与 go2.xml 的
         # 关节参数）。再给仿真单独调一套软的，等于对着一个不存在的理想模型
@@ -225,8 +222,8 @@ class Go2Robot:
     def connect(self, timeout: float = 3.0) -> bool:
         return self.controller.connect(timeout)
 
+    # 收工。park=True 先蹲下再阻尼，避免从站立高度直接掉下来。
     def shutdown(self, park: bool = True) -> None:
-        """收工。park=True 先蹲下再阻尼，避免从站立高度直接掉下来。"""
         self.controller.shutdown(park=park)
 
     def telemetry(self, duration: float = 5.0) -> int:
@@ -237,13 +234,12 @@ class Go2Robot:
 
     # -- 对象树 --------------------------------------------------------
 
+    # 返回三层的实际嵌套关系，同时校验它没被写成别名。
+    #
+    # 校验项：controller 是 Go2Controller、high_level 是 HighLevelController、
+    # high_level 挂在 controller 的 __dict__ 里、且 high_level 指回同一个 controller。
+    # 任何一项不成立就抛 AssertionError —— 免得哪天又被人「拍平」成兄弟属性。
     def hierarchy(self) -> dict:
-        """返回三层的实际嵌套关系，同时校验它没被写成别名。
-
-        校验项：controller 是 Go2Controller、high_level 是 HighLevelController、
-        high_level 挂在 controller 的 __dict__ 里、且 high_level 指回同一个 controller。
-        任何一项不成立就抛 AssertionError —— 免得哪天又被人「拍平」成兄弟属性。
-        """
         c = self.controller
         hl = getattr(c, "high_level", None)
         assert isinstance(c, Go2Controller), "第 2 层不是 Go2Controller"
@@ -260,8 +256,8 @@ class Go2Robot:
                                         children=[]),
         }
 
+    # 在终端打印对象树，用来肉眼确认三层是真的嵌套。
     def print_tree(self) -> None:
-        """在终端打印对象树，用来肉眼确认三层是真的嵌套。"""
         c = self.controller
         hl = c.high_level
         print(f"Go2Robot            {self.preset:4s} id=0x{id(self):x}")

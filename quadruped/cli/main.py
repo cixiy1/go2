@@ -139,8 +139,8 @@ def make_robot(args) -> Go2Robot:
                     kp_calf=args.kp_calf, gait=gait)
 
 
+# 连之前先看网卡在不在，免得白等 3 秒后报一句含糊的「没收到 lowstate」。
 def check_iface(robot: Go2Robot) -> int:
-    """连之前先看网卡在不在，免得白等 3 秒后报一句含糊的「没收到 lowstate」。"""
     c = robot.controller
     if Go2Robot.interface_exists(c.iface):
         return 0

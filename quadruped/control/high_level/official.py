@@ -95,8 +95,8 @@ GAIT_SWITCH = {0: "idle", 1: "trot", 2: "trot_running",
                3: "climb_stair", 4: "back_down_stair"}
 
 
+# 把返回码翻成人话，查不到就原样返回。日志里别只打数字。
 def explain(code: int) -> str:
-    """把返回码翻成人话，查不到就原样返回。日志里别只打数字。"""
     if code == 0:
         return "ok"
     return ERRORS.get(code, f"错误码 {code}")
@@ -144,133 +144,131 @@ class OfficialHighLevel:
     def _on_state(self, msg):
         self.state = msg
 
+    # 给缺方法的那几条 api 用。参数统一 `{"data": ...}` 或散装键值。
     def _call(self, api_id: int, **data) -> int:
-        """给缺方法的那几条 api 用。参数统一 `{"data": ...}` 或散装键值。"""
         code, _ = self.client._Call(api_id, json.dumps(data))
         return code
 
     # -- 与自研同名同义：连接与基础姿态 ---------------------------------
 
+    # 通道在构造时就建好了，这里重发一次 `SportClient.Init()` 无害。
     def Init(self) -> int:
-        """通道在构造时就建好了，这里重发一次 `SportClient.Init()` 无害。"""
         return self.client.Init() or self.API_OK
 
     def SetTimeout(self, seconds: float) -> int:
         self.client.SetTimeout(seconds)
         return self.API_OK
 
+    # 阻尼状态。电机关节全部失力，优先级最高，用于急停。
     def Damp(self) -> int:
-        """阻尼状态。电机关节全部失力，优先级最高，用于急停。"""
         return self.client.Damp()
 
+    # 平衡站立。姿态与高度不受地形影响，可配合 Euler / BodyHeight 用。
     def BalanceStand(self) -> int:
-        """平衡站立。姿态与高度不受地形影响，可配合 Euler / BodyHeight 用。"""
         return self.client.BalanceStand()
 
+    # 停下当前动作，把内部运动参数恢复默认值。
     def StopMove(self) -> int:
-        """停下当前动作，把内部运动参数恢复默认值。"""
         return self.client.StopMove()
 
+    # 关节锁定站高，默认 0.33 m。姿态不再自适应地形。
     def StandUp(self) -> int:
-        """关节锁定站高，默认 0.33 m。姿态不再自适应地形。"""
         return self.client.StandUp()
 
+    # 关节锁定趴下。
     def StandDown(self) -> int:
-        """关节锁定趴下。"""
         return self.client.StandDown()
 
+    # 从翻倒或趴下恢复到平衡站立。
     def RecoveryStand(self) -> int:
-        """从翻倒或趴下恢复到平衡站立。"""
         return self.client.RecoveryStand()
 
+    # 坐下。特殊动作，必须等上一个动作做完。
     def Sit(self) -> int:
-        """坐下。特殊动作，必须等上一个动作做完。"""
         return self.client.Sit()
 
+    # 从坐下恢复到平衡站立。
     def RiseSit(self) -> int:
-        """从坐下恢复到平衡站立。"""
         return self.client.RiseSit()
 
     # -- 速度与姿态 ------------------------------------------------------
 
+    # 机体坐标系速度。vx ∈ [-2.5, 3.8]、vy ∈ [-1, 1]、vyaw ∈ [-4, 4]。
+    #
+    # 无回复调用：机器会一直保持这个速度，直到下一条指令或 StopMove。
     def Move(self, vx: float, vy: float, vyaw: float) -> int:
-        """机体坐标系速度。vx ∈ [-2.5, 3.8]、vy ∈ [-1, 1]、vyaw ∈ [-4, 4]。
-
-        无回复调用：机器会一直保持这个速度，直到下一条指令或 StopMove。
-        """
         return self.client.Move(vx, vy, vyaw)
 
+    # 机体姿态角，单位 rad。roll/pitch ∈ [-0.75, 0.75]、yaw ∈ [-0.6, 0.6]。
     def Euler(self, roll: float, pitch: float, yaw: float) -> int:
-        """机体姿态角，单位 rad。roll/pitch ∈ [-0.75, 0.75]、yaw ∈ [-0.6, 0.6]。"""
         return self.client.Euler(roll, pitch, yaw)
 
+    # 机身高度相对默认值的偏移，∈ [-0.18, 0.03] m（默认 0.33 m）。
+    #
+    # `BodyHeight(-0.1)` = 降到 0.23 m。这是自研那份 `crouch_async` 的落点。
     def BodyHeight(self, height: float) -> int:
-        """机身高度**相对**默认值的偏移，∈ [-0.18, 0.03] m（默认 0.33 m）。
-
-        `BodyHeight(-0.1)` = 降到 0.23 m。这是自研那份 `crouch_async` 的落点。
-        """
         return self._call(API_BODY_HEIGHT, data=height)
 
+    # 抬足高度相对偏移，∈ [-0.06, 0.03] m（默认 0.09 m）。
     def FootRaiseHeight(self, height: float) -> int:
-        """抬足高度相对偏移，∈ [-0.06, 0.03] m（默认 0.09 m）。"""
         return self._call(API_FOOT_RAISE_HEIGHT, data=height)
 
+    # 速度档位：-1 慢 / 0 正常 / 1 快。
     def SpeedLevel(self, level: int) -> int:
-        """速度档位：-1 慢 / 0 正常 / 1 快。"""
         return self.client.SpeedLevel(level)
 
     # -- 步态与运动模式 --------------------------------------------------
 
+    # 切步态：0 idle / 1 trot / 2 trot running / 3 正向爬楼 / 4 逆向爬楼。
     def SwitchGait(self, gait: int) -> int:
-        """切步态：0 idle / 1 trot / 2 trot running / 3 正向爬楼 / 4 逆向爬楼。"""
         return self._call(API_SWITCH_GAIT, data=gait)
 
+    # 持续步态：速度为 0 时仍原地踏步（要「一直动」的场合用）。
     def ContinuousGait(self, enable: bool = True) -> int:
-        """持续步态：速度为 0 时仍原地踏步（要「一直动」的场合用）。"""
         return self._call(API_CONTINUOUS_GAIT, data=enable)
 
+    # 小跑。
     def TrotRun(self) -> int:
-        """小跑。"""
         return self.client.TrotRun()
 
+    # 静态步行（慢，但稳）。
     def StaticWalk(self) -> int:
-        """静态步行（慢，但稳）。"""
         return self.client.StaticWalk()
 
+    # 经典步行。false 退出回灵动。
     def ClassicWalk(self, enable: bool = True) -> int:
-        """经典步行。false 退出回灵动。"""
         return self.client.ClassicWalk(enable)
 
+    # 灵动模式。跳跃/空翻结束会自动落到这个模式。
     def FreeWalk(self) -> int:
-        """灵动模式。跳跃/空翻结束会自动落到这个模式。"""
         return self.client.FreeWalk()
 
+    # 并腿跑。
     def FreeBound(self, enable: bool = True) -> int:
-        """并腿跑。"""
         return self.client.FreeBound(enable)
 
+    # 跳跃模式。
     def FreeJump(self, enable: bool = True) -> int:
-        """跳跃模式。"""
         return self.client.FreeJump(enable)
 
+    # 闪避模式：移动时避障，静止时对前方物体闪避。
     def FreeAvoid(self, enable: bool = True) -> int:
-        """闪避模式：移动时避障，静止时对前方物体闪避。"""
         return self.client.FreeAvoid(enable)
 
+    # 后腿直立。
     def WalkUpright(self, enable: bool = True) -> int:
-        """后腿直立。"""
         return self.client.WalkUpright(enable)
 
+    # 交叉步。
     def CrossStep(self, enable: bool = True) -> int:
-        """交叉步。"""
         return self.client.CrossStep(enable)
 
+    # 倒立行走。需要先处于可移动状态，建议先 BalanceStand。
     def HandStand(self, enable: bool = True) -> int:
-        """倒立行走。需要先处于可移动状态，建议先 BalanceStand。"""
         return self.client.HandStand(enable)
 
+    # 切换避障模式。
     def SwitchAvoidMode(self) -> int:
-        """切换避障模式。"""
         return self.client.SwitchAvoidMode()
 
     # -- 特技 ------------------------------------------------------------
@@ -287,8 +285,8 @@ class OfficialHighLevel:
     def Heart(self) -> int:
         return self.client.Heart()
 
+    # 拜年作揖。要求当前姿态良好，否则返回 4206。
     def Scrape(self) -> int:
-        """拜年作揖。要求当前姿态良好，否则返回 4206。"""
         return self.client.Scrape()
 
     def Dance1(self) -> int:
@@ -306,21 +304,20 @@ class OfficialHighLevel:
     def FrontPounce(self) -> int:
         return self.client.FrontPounce()
 
+    # 左空翻。要求非运动状态，结束后自动进灵动模式。
     def LeftFlip(self) -> int:
-        """左空翻。要求非运动状态，结束后自动进灵动模式。"""
         return self.client.LeftFlip()
 
+    # 后空翻。要求非运动状态，结束后自动进灵动模式。
     def BackFlip(self) -> int:
-        """"后空翻。要求非运动状态，结束后自动进灵动模式。"""
         return self.client.BackFlip()
 
     # -- 轨迹与配置 ------------------------------------------------------
 
+    # 跟一条轨迹。`path` 必须是 30 个 `PathPoint`（tFromStart/x/y/yaw/vx/vy/vyaw）。
+    #
+    # 参考系是机器人的绝对坐标系；点数不对直接返回 4101，不发请求。
     def TrajectoryFollow(self, path: list) -> int:
-        """跟一条轨迹。`path` 必须是 30 个 `PathPoint`（tFromStart/x/y/yaw/vx/vy/vyaw）。
-
-        参考系是机器人的绝对坐标系；点数不对直接返回 4101，不发请求。
-        """
         if len(path) != self.PATH_SIZE:
             return 4101
 
@@ -331,33 +328,38 @@ class OfficialHighLevel:
         code = self.client._CallNoReply(API_TRAJECTORY_FOLLOW, json.dumps(points))
         return code
 
+    # 原生遥控器是否响应。关掉之后遥控器不干扰程序。
     def SwitchJoystick(self, enable: bool) -> int:
-        """原生遥控器是否响应。关掉之后遥控器不干扰程序。"""
         return self.client.SwitchJoystick(enable)
 
+    # 自动恢复开关（翻倒了自己爬起来）。
     def AutoRecoverySet(self, enable: bool) -> int:
-        """自动恢复开关（翻倒了自己爬起来）。"""
         return self.client.AutoRecoverySet(enable)
 
     def AutoRecoveryGet(self) -> tuple[int, bool | None]:
         return self.client.AutoRecoveryGet()
 
     # -- 文档里有、拿不到 id 的 ------------------------------------------
+    # 这四条一律抛 NotImplementedError：发错 api_id 不会报错，会直接触发一个动作。
 
+    # 走到指定点。B2 上是 1036，Go2 的 1036 已经给了 Heart，撞车，不猜。
     def MoveToPos(self, x: float, y: float, yaw: float) -> int:
         raise NotImplementedError(
             "MoveToPos 在 B2 上是 api 1036，而 Go2 的 1036 给了 Heart，两个撞车。"
             "要走到指定点，用自研那份的 forward/strafe/turn（带里程计闭环）。")
 
+    # 取内部状态表。文档只给了 C++ 签名，没给 api_id；状态读 rt/sportmodestate 就够。
     def GetState(self) -> int:
         raise NotImplementedError(
             "GetState 的 C++ 签名是 (vector<string>, map<string,string>)，"
             "没有 api_id。要状态就直接读 rt/sportmodestate，见本类的 mode / "
             "gait_type / height / velocity。")
 
+    # 打滚。任何文档都没列 Go2 的 id。
     def Wallow(self) -> int:
         raise NotImplementedError("Wallow（打滚）查不到 Go2 的 api_id，不猜。")
 
+    # 上楼梯。同样没有 id；要爬楼用 SwitchGait(3) / SwitchGait(4)。
     def WalkStair(self, enable: bool = True) -> int:
         raise NotImplementedError(
             "WalkStair 查不到 Go2 的 api_id。爬楼用 SwitchGait(3) / SwitchGait(4)。")
@@ -371,27 +373,26 @@ class OfficialHighLevel:
     def stop_async(self) -> int:
         return self.StopMove()
 
+    # 停步并站定。
     def freeze(self) -> int:
-        """停步并站定。"""
         self.StopMove()
         return self.BalanceStand()
 
+    # 前跳。自研那份可以调下蹲深度与蹬腿幅度，官方只有固定的一套。
     def jump_async(self, crouch: float = 0.0, push: float = 0.0) -> int:
-        """前跳。自研那份可以调下蹲深度与蹬腿幅度，官方只有固定的一套。"""
         return self.FrontJump()
 
+    # 蹲低 `depth` 米。官方没有关节级的蹲，用 BodyHeight 降机身。
+    #
+    # 想彻底坐下用 `Sit()`，那是另一个姿势（后腿折叠、前腿撑地）。
     def crouch_async(self, depth: float = 0.08) -> int:
-        """蹲低 `depth` 米。官方没有关节级的蹲，用 BodyHeight 降机身。
-
-        想彻底坐下用 `Sit()`，那是另一个姿势（后腿折叠、前腿撑地）。
-        """
         return self.BodyHeight(-abs(depth))
 
     def uncrouch_async(self) -> int:
         return self.BodyHeight(0.0)
 
+    # 收工：停步。原生运动服务自己有平衡环，停住就行，不需要 Damp 趴下。
     def park(self) -> int:
-        """收工：停步。原生运动服务自己有平衡环，停住就行，不需要 Damp 趴下。"""
         return self.StopMove()
 
     # 风格切换是自研独有的（机械 / 仿生两档跳跃与跑法），官方没有对应概念。
@@ -420,13 +421,12 @@ class OfficialHighLevel:
     def rpy(self):
         return tuple(self.state.imu_state.rpy) if self.state is not None else None
 
+    # 机体高度，直接读状态里的 body_height。
+    #
+    # 仿真桥不填这个字段（一直是 0），所以 0 当作「没有」返回 None ——
+    # 拿 position[2] 冒充会差一个 base_link 的常数，宁可说没有。
     @property
     def height(self):
-        """机体高度，直接读状态里的 body_height。
-
-        仿真桥不填这个字段（一直是 0），所以 0 当作「没有」返回 None ——
-        拿 position[2] 冒充会差一个 base_link 的常数，宁可说没有。
-        """
         if self.state is None or self.state.body_height <= 0.01:
             return None
         return self.state.body_height
@@ -447,13 +447,13 @@ class OfficialHighLevel:
     def foot_force(self):
         return tuple(self.state.foot_force) if self.state is not None else None
 
+    # 动作进行中（progress=1）。站着的狗一直 false，和自研那份语义一致。
     @property
     def busy(self) -> bool:
-        """动作进行中（progress=1）。站着的狗一直 false，和自研那份语义一致。"""
         return bool(self.state is not None and self.state.progress)
 
+    # 一行状态，日志和调试用。
     def status_text(self) -> str:
-        """一行状态，日志和调试用。"""
         if self.state is None:
             return "还没有 rt/sportmodestate（服务没起或域号不对）"
         rpy = ", ".join(f"{v:+.2f}" for v in self.state.imu_state.rpy)

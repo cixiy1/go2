@@ -61,11 +61,10 @@ class ControllerGroup(Protocol):
     GROUP: dict
 
 
+# 校验一个分组的 `GROUP`。出错抛 ValueError，消息会显示在菜单里。
+#
+# `order` 决定菜单里的先后，同值按目录名排。默认 50，写到中间好调整。
 def normalize_group(meta, name: str) -> dict:
-    """校验一个分组的 `GROUP`。出错抛 ValueError，消息会显示在菜单里。
-
-    `order` 决定菜单里的先后，同值按目录名排。默认 50，写到中间好调整。
-    """
     if not isinstance(meta, dict):
         raise ValueError(f"GROUP 应该是 dict，实际是 {type(meta).__name__}")
 
@@ -84,13 +83,12 @@ def normalize_group(meta, name: str) -> dict:
     return clean
 
 
+# 校验并补全 META，返回一份干净的副本。
+#
+# 出错抛 ValueError，消息里带上字段名和实际值 —— 启动器会把这句话原样
+# 显示在菜单里，所以它得让人一眼能改。`group` 由所在目录决定，写错了报错
+# 而不是覆盖：搬文件忘改 group 是最容易发生的错，静默修正会让人以为生效了。
 def normalize_meta(meta, group: str, stem: str) -> dict:
-    """校验并补全 META，返回一份干净的副本。
-
-    出错抛 ValueError，消息里带上字段名和实际值 —— 启动器会把这句话原样
-    显示在菜单里，所以它得让人一眼能改。`group` 由所在目录决定，写错了报错
-    而不是覆盖：搬文件忘改 group 是最容易发生的错，静默修正会让人以为生效了。
-    """
     if not isinstance(meta, dict):
         raise ValueError(f"META 应该是 dict，实际是 {type(meta).__name__}")
 
@@ -119,11 +117,10 @@ def normalize_meta(meta, group: str, stem: str) -> dict:
     return clean
 
 
+# 校验一个已导入的模块。返回 (meta, error)，两者必有一为 None。
+#
+# `main` 缺失不在这里查 —— 有些模块只在 `__main__` 里跑，能 `-m` 起来就够了。
 def check_module(mod, group: str, stem: str):
-    """校验一个已导入的模块。返回 (meta, error)，两者必有一为 None。
-
-    `main` 缺失不在这里查 —— 有些模块只在 `__main__` 里跑，能 `-m` 起来就够了。
-    """
     meta = getattr(mod, "META", None)
     if meta is None:
         return None, None                  # 没有 META 的不是控制器，交给调用方跳过
