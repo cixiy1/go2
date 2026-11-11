@@ -272,6 +272,14 @@ class Leg:
             J[:, i] = _cross(k["axes"][i], k["foot"] - k["joints"][i])
         return J
 
+    # 足端位置和雅可比一起给，少算一遍 `_kin`。WBC 每帧两条都要。
+    def fk_jac(self, q):
+        k = self._kin(q)
+        J = np.zeros((3, 3))
+        for i in range(3):
+            J[:, i] = _cross(k["axes"][i], k["foot"] - k["joints"][i])
+        return k["foot"], J
+
     # 整条腿的质心（机体系）与质量。
     def com(self, q):
         k = self._kin(q)
@@ -370,6 +378,41 @@ class Leg:
     # 速度项 + 重力项，b = C(q,q̇)q̇ + g(q)。
     def bias(self, q, dq=None) -> np.ndarray:
         return self.rnea(q, dq, None)
+
+    # M(q) 与 h(q, q̇) 一起给。WBC 每帧每条腿都要这一对，`mass_matrix` +
+    # `bias` 是 5 次 RNEA（1.14 ms / 四腿），这里 1 次 RNEA + 一组解析式。
+    #
+    # 质量矩阵按动能二次型求：M[k][j] = ∂²T/∂q̇_k∂q̇_j。关节 k 转动时，
+    # 它后面（远离基座那一段）每根连杆的角速度贡献就是单位轴 a_k，质心线
+    # 速度贡献是 a_k × (c_i − o_k)。所以
+    #
+    #   M[k][j] = Σ_{i ≥ max(k,j)}  m_i·(a_k×(c_i−o_k))·(a_j×(c_i−o_j))
+    #                              + a_kᵀ·I_i·a_j
+    #
+    # 全是机体系里的定值，不依赖 q̇，比跑三遍 RNEA 便宜一个量级，且是精确值
+    # （不是差分）。h 还是要 RNEA —— 科氏项没有这种短式子。
+    def mass_and_bias(self, q, dq=None):
+        kin = self._kin(q)
+        o = kin["joints"]
+        ax = kin["axes"]
+        c = [o[i] + kin["rots"][i] @ self.com_local[i] for i in range(3)]
+        # 各连杆的 3×3 惯量（机体系）
+        I = [kin["rots"][i] @ self.inertia[i] @ kin["rots"][i].T
+             for i in range(3)]
+        # Jv[i][k]：关节 k 转动时连杆 i 质心的单位线速度
+        Jv = [[None] * 3 for _ in range(3)]
+        for i in range(3):
+            for k in range(i + 1):
+                Jv[i][k] = _cross(ax[k], c[i] - o[k])
+        M = np.zeros((3, 3))
+        for k in range(3):
+            for j in range(k + 1):
+                s = 0.0
+                for i in range(max(k, j), 3):
+                    s += self.mass[i] * float(Jv[i][k] @ Jv[i][j])
+                    s += float(ax[k] @ I[i] @ ax[j])
+                M[k, j] = M[j, k] = s
+        return M, self.rnea(q, dq, None)
 
     # 纯重力项（含连杆自重）。静止悬挂时的关节力矩就是它。
     def gravity(self, q) -> np.ndarray:

@@ -38,10 +38,10 @@ import time
 from dataclasses import dataclass, field
 
 import numpy as np
-import osqp
 import scipy.sparse as sp
 
 from .model import GRAVITY, TOTAL_MASS, whole_body_com, whole_body_inertia
+from .qp import DenseQP
 
 LEGS = ("FL", "FR", "RL", "RR")
 
@@ -187,11 +187,12 @@ class SRBDMPC:
         # 这个偷工就没那么便宜了。
         self.Q_terminal = self.Q * 20.0
 
-        self._solver = None
-        self._P = None
         # 约束矩阵只跟 horizon、腿数、μ 有关，结构整场不变 —— 建一次存着。
-        # 每帧变的只有上下界（哪条腿着地），OSQP 靠 update(l, u) 吃这个。
+        # 每帧变的只有上下界（哪条腿着地），所以 A 只在第一帧交给求解器。
         self._A = self._constraints()
+        self._A_dense = self._A.toarray()
+        self._qp = DenseQP(12 * self.N, self._A.shape[0],
+                           eps_abs=eps_abs, eps_rel=eps_rel, polish=polish)
         self.solve_times = []
 
     # --- 建模 -------------------------------------------------------------
@@ -355,36 +356,21 @@ class SRBDMPC:
 
         lo, up = self._bounds(contacts)
 
-        if self._solver is None:
-            self._solver = osqp.OSQP()
-            self._P = sp.csc_matrix(H)
-            self._solver.setup(P=self._P, q=g, A=self._A,
-                               l=lo, u=up,
-                               verbose=False, eps_abs=self.eps_abs,
-                               eps_rel=self.eps_rel,
-                               max_iter=8000, warm_start=True,
-                               polish=self.polish)
-        else:
-            # H 每帧都在变，但结构不变（稠密），直接把数拷进预分配的 csc：
-            # csc 的 data 就是列优先展开，正好等于 H 的 Fortran 序。省掉
-            # 每帧 200 µs 的 稀疏化。
-            self._P.data[:] = H.ravel(order="F")
-            self._solver.update(P=self._P, q=g, l=lo, u=up)
-
-        res = self._solver.solve()
+        # H 每帧都在变，A 不变 —— A 只在第一帧交出去（见 qp.DenseQP）
+        x, info = self._qp.solve(H, g,
+                                 None if self._qp.ready else self._A_dense,
+                                 lo, up)
         self.solve_times.append(time.perf_counter() - t0)
         if len(self.solve_times) > 200:
             self.solve_times.pop(0)
 
-        f = np.asarray(res.x, dtype=float).reshape(self.N, 4, 3)
+        f = x.reshape(self.N, 4, 3)
         if not np.isfinite(f).all():
             # 解出 nan 只有一种原因：H 或 g 里有 inf/nan（状态炸了、姿态到奇异
             # 点、或者 I 不可逆）。这时候把力交给腿上是灾难，宁可当场炸。
-            raise RuntimeError(f"MPC 解出发散：{res.info.status}")
-        info = dict(status=res.info.status, obj=float(res.info.obj_val),
-                    iter=int(res.info.iter),
-                    solve_ms=1e3 * float(res.info.run_time),
-                    total_ms=1e3 * (time.perf_counter() - t0))
+            raise RuntimeError(f"MPC 解出发散：{info['status']}")
+        info["solve_ms"] = info.pop("run_ms")
+        info["total_ms"] = 1e3 * (time.perf_counter() - t0)
         return MPCSolution(forces=f, contacts=np.asarray(contacts).astype(bool),
                            feet_rel=feet_rel, R=R, info=info)
 

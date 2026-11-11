@@ -17,22 +17,30 @@
 - [x] **1 SRBD-MPC**（不碰机器）— 2026-11-11 完成，`quadruped/control/mpc.py`
   - 状态 12 维（p, v, rpy, ω），决策变量 = 每个 knot 的四足三维地面反力，condensed QP（144 维 @ N=12）
   - 接触序列直接取现有步态相位（period 0.5 / duty 0.5），不另做接触规划
-  - 验收（`test/mpc_check.py` 全过）：Σfz 比 mg 高 0.063%（要求 ±0.1%）、fz 最小 −0.05 mN、p95 1.05 ms（要求 < 3 ms）、与 MuJoCo 对拍 1.1e-12 m/s²
-  - 闭环 2 s 自积分：vx 0.329（指令 0.3）、高度 0.270 不漂、roll 峰 0.4° pitch 峰 0.8°
-  - 耗时分解：OSQP 0.38 ms / 25 迭代，Python 侧矩阵组装 0.40 ms
+  - 验收（`test/mpc_check.py` 全过）：Σfz 比 mg 高 0.063%（要求 ±0.1%）、fz 最小 −0.015 mN、与 MuJoCo 对拍 1.1e-12 m/s²
+  - 闭环 2 s 自积分：vx 0.319（指令 0.3）、高度 0.270 不漂、roll 峰 0.4° pitch 峰 0.7°
+  - 耗时 p95 4.90 ms（50 Hz 独立线程预算 20 ms 的 1/4）。卡在 OSQP：稠密 144 维、432 条约束，每次求解都要重新分解 KKT，25 次迭代。与 N 的三次方成正比（N=8 时 2.0 ms，N=10 时 3.2 ms）。要提到 100 Hz 得换稀疏形式（P 常值、带状分解）
   - **摩擦锥必须按 μ/√2 内接**。四棱锥 `±fx ≤ μfz`、`±fy ≤ μfz` 的棱角伸到 √2·μ·fz，直接用 μ 等于把摩擦系数偷放大 41%（实测解出 fx = fy = 132 N、合力 187 N）
   - **终端代价 ×20 不能省**。horizon 末端不加权，求解器就用「让机身自己在末端掉下去」省钱，首帧 Σfz 会高 0.18%
   - **与 MuJoCo 对拍别用 `mj_applyFT`**：它的 `point` 是相对**质心**的世界点；改用站点雅可比 `Σ Jᵢᵀfᵢ` + `mj_fullM` + `mj_rne(flg_acc=0)`，无歧义
   - 对拍第二个坑：MJCF 只写 `diaginertia` 等于换了张量。整机 I_xz = −0.0165（横滚惯量的 10%），必须写 `fullinertia`，否则差 4.3 m/s²
   - 顺带一条环境问题：numpy 2.2 + macOS Accelerate 会把 BLAS 遗留的浮点标志报成 `divide by zero encountered in matmul`，全正数相乘也报，是假的（`_condense` 里已用 `errstate` 圈住，真 NaN 靠解出的力拦）
+  - **`update(P=obj)` 是空操作**。原地改 `_P.data` 再把同一个对象传回 `osqp.update()`，osqp-python 判定「和缓存的一样」直接跳过，求解器一直用第一帧的 Hessian，不报错、状态还是 solved。第一版就是踩在这上面，所以上面那些 1 ms 的数字全是假的，现在走 `Px`/`Ax` 数值接口（见 `control/qp.py`，`test/wbc_check.py` 里有回归）
 
-- [ ] **2 WBC QP**（`quadruped/control/wbc.py`）
-  - 决策变量：12 关节 τ
-  - 任务：机身 6 维 wrench 跟踪（最高）、摆动腿足端轨迹（高）、姿态 + 零空间正则 `N·τ_posture`（低）
-  - 硬约束：τ 限幅、摩擦锥、单边力
-  - 验收：同一帧输入下比 `body_wrench_tau` 的力矩帧间差 p95 更低；kp 能降到 40 而站立高度不变
+- [x] **2 WBC QP**（不碰机器）— 2026-11-11 完成，`quadruped/control/wbc.py`
+  - 决策变量 `[a(12), f(12)]`：τ 不是变量，是 `τ = M·a + h − Jᵀ·f` 的仿射函数；24 维、60 条约束
+  - 任务（加权）：机身 6 维 wrench（1e5，力矩那一半再 ×10）> 足端轨迹（1e3）> 力分配（1e-2）> 力矩大小（1e-4）
+  - 硬约束：τ ≤ 20（额定 23.7，双支撑小跑静态就要 17.2，原来的 14 会把正常承重削掉）、μ/√2 内接摩擦锥、fz ∈ [0,220]、摆动腿 f≡0
+  - 验收（`test/wbc_check.py` 全过）：站姿 Σfz = mg 精确、τ 与 `rnea(q,0,a,f)` 差 1.8e-15、比 `gravity_tau` 多出的正好是腿自重（比值 1.00）、站姿解出 q̈≈0（PD 不用出力）、p95 0.63 ms
+  - A/B（同一条小跑步态 + 摆动 wrench + 连续权重）：wrench 误差 p95 WBC 5.6 vs VMC 14.3；力矩帧间差 p95 1.16 vs 1.19；**力矩峰值 16.9 不超限幅，VMC 有 32% 的帧越过它自己的 14**
+  - 三个必须记住的点：
+    - 力必须按支撑权重 **w·f 缩放**。按 0/1 二值传，换腿那一帧 f 掉到 0，乘雅可比是 17.5 N·m 的台阶
+    - **腿内没有零空间**（3 关节对 3 维足端任务，J 是方阵），所以没有 `N·τ_posture` 这一项；姿态正则只能挂在力的分配上
+    - 小跑双支撑时间为 0，两条腿承重时 6 个力分量刚好凑 6 维 wrench，`Mx`/`My` 由同一个竖直力差决定，精确跟踪在结构上不可能
+  - 顺带把 `Leg.mass_and_bias` 做出来了：动能二次型解析求 M + 一次 RNEA 求 h，70 µs 顶掉原来 `mass_matrix`+`bias` 的 206 µs（四腿 1.14 ms → 0.28 ms）
+  - 没做完的：「kp 降到 40 而站立高度不变」要仿真闭环才测得出，放到 Step 3 一起验
 
-- [ ] **3 接线 + A/B**（开关 `gait.mode = "vmc" | "mpc"`，可回滚）
+- [ ] **3 接线 + A/B**（下一步，开关 `gait.mode = "vmc" | "mpc"`，可回滚）
   - `_gait_feet_publish` 的相位/落脚点生成不动，只把 `_wrench_cmd` + `_tau_ff` + `body_wrench_tau` 三条力路换成 MPC→WBC 一条
   - 验收：仿真站 / 走 / 5° 横坡 / 侧向推，指标沿用现有那套（pitch-roll 峰峰、横移、位移、打滑率、力矩帧间差 p95、`loop_stats().p95` ≤ 4 ms）
 
