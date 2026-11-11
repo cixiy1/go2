@@ -191,7 +191,7 @@ class GaitParams:
                  stride_max=0.075, speed_range=None,
                  reach=0.0, reach_err=0.0, stance_sink=0.0,
                  stand_raise=0.0, damp_z=0.0, wrench=1.0,
-                 speed_loop=0.0, stance_spread=0.0, mode="vmc"):
+                 speed_loop=0.0, stance_spread=0.0, mode="mpc"):
         if not 0.05 < duty < 0.95:
             raise ValueError(f"duty={duty} 不合理，应在 (0.05, 0.95)")
         self.period = period            # 一个完整步态周期，秒
@@ -305,7 +305,8 @@ class GaitParams:
         # - `mpc` 自研路径：50 Hz 的 SRBD-MPC 出地面反力序列 → 200 Hz 的 WBC
         #   把它连同足端轨迹一起解成关节力矩。
         #
-        # 默认 vmc：自研那一路还在 A/B 阶段，出问题要能一秒钟退回去。
+        # 默认 mpc：运控的三层（步态 / MPC / WBC）就是这套代码的本体。
+        # vmc 留着回滚与 A/B —— `GO2_MOTION=vmc` 或 `make_gait(mode="vmc")`。
         if mode not in ("vmc", "mpc"):
             raise ValueError(f"mode={mode!r} 不认识，只有 'vmc' 与 'mpc'")
         self.mode = mode
@@ -353,19 +354,21 @@ _GAIT_ALIASES = {"trot": "mech", "bound": "bio"}
 # 「整条腿在地上刨，一步都走不动」）、抬脚抬高（真机足端有橡胶、地面软，
 # 6 cm 的余量经常蹭地）。`mech` / `bio` 不分叉，真机与仿真同一套参数。
 #
-# `mode` 选力路的实现（`"vmc"` 现役 / `"mpc"` 自研），直接透传给 GaitParams。
-# 它不属于步态形态，只是方便「同一套步态参数换一条力路做 A/B」。
+# `mode` 选力路的实现（`"mpc"` 默认 / `"vmc"` 现役的旧路），直接透传给
+# GaitParams。它不属于步态形态，只是「同一套步态参数换一条力路」的开关。
 #
-# 不给就落到环境变量 `GO2_MOTION`，那是启动器（`quadruped/cli/launcher.py`）
-# 设的。走环境变量而不是给每个控制器加一个 argparse 参数，是因为所有入口的
-# 步态最后都过这里 —— `main.py` 的子命令、键盘遥控经 `OursBackend` 到
-# `Go2Robot` 的兜底、`sim_check`，一处改就全覆盖。显式传参仍然优先。
+# **默认 mpc。** 三层运控是这套代码的本体，vmc 留着是为了回滚和 A/B。
+#
+# 显式传参 > 环境变量 `GO2_MOTION` > 默认 mpc。环境变量由启动器
+# （`quadruped/cli/launcher.py`）设，走它而不是给每个控制器加一个 argparse
+# 参数，是因为所有入口的步态最后都过这里 —— `main.py` 的子命令、键盘遥控经
+# `OursBackend` 到 `Go2Robot` 的兜底、`sim_check`，一处改就全覆盖。
 def make_gait(style: str, height: float = NOMINAL_HEIGHT,
               real: bool = False, mode: str | None = None) -> GaitParams:
     if mode is None:
-        # `or` 而不是 `get(..., "vmc")`：`GO2_MOTION= cmd` 这种空赋值很常见，
+        # `or` 而不是 `get(..., "mpc")`：`GO2_MOTION= cmd` 这种空赋值很常见，
         # 空串要当成没设，否则会一路走到 GaitParams 里去报「mode='' 不认识」。
-        mode = os.environ.get("GO2_MOTION") or "vmc"
+        mode = os.environ.get("GO2_MOTION") or "mpc"
     neutral = _neutral_feet(height)
     style = _GAIT_ALIASES.get(style, style)
 

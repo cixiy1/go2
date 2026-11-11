@@ -17,7 +17,7 @@
 
 用法：
     uv run python main.py                # 交互：环境 → 运控 → 控制器
-    uv run python main.py keyboard       # 跳过选择，直接跑键盘遥控（默认仿真 / VMC）
+    uv run python main.py keyboard       # 跳过选择，直接跑键盘遥控（默认仿真 / MPC+WBC）
     uv run python main.py --sim          # 只起 MuJoCo 仿真器，占住当前终端
     uv run python main.py --preset real --motion mpc keyboard
     uv run python main.py --list         # 只列清单
@@ -235,8 +235,8 @@ ENV_SPEC = {
 SIM_BOOT = 4.0
 
 MOTIONS = [
-    ("vmc", "关闭（VMC）", "单层反馈，回路 p95 5.8 ms"),
-    ("mpc", "开启（MPC + WBC）", "三层，回路 p95 8.2 ms，仍在超时"),
+    ("mpc", "开启（MPC + WBC）", "默认。三层；单帧 1.0 ms，回路 p95 8~9 ms"),
+    ("vmc", "关闭（VMC）", "单层反馈；单帧 0.5 ms，回路 p95 5.8 ms"),
 ]
 
 # 控制端。仿真桥只有 rt/lowcmd 和 rt/sportmodestate，没有运动服务，官方那条
@@ -299,7 +299,7 @@ def ask_settings() -> dict:
             ("阻尼 kd", "kd", _show("kd"), lambda cur: _ask_number("kd", cur)),
             ("控制端", "client", _show("client"), edit_client),
         ],
-        dict(env="sim-new", motion="vmc", kp=None, kd=None, client="__none__"),
+        dict(env="sim-new", motion="mpc", kp=None, kd=None, client="__none__"),
         note=_NUM_NOTE,
     ).run()
 
@@ -497,14 +497,14 @@ def main(argv=None) -> int:
     if args.list:
         render_menu(groups, entries)
         print(f"  环境：{args.preset or '交互时选'}    "
-              f"运控：{args.motion or '交互时选'}")
+              f"运控：{args.motion or '默认 mpc'}")
         print("  起仿真器：uv run python main.py --sim\n")
         return 0
 
     if args.controllers:
-        # 直接点名：不再问，缺的用默认（仿真 / VMC）。
+        # 直接点名：不再问，缺的用默认（仿真 / MPC+WBC）。
         cfg = dict(env="real" if args.preset == "real" else "sim",
-                   motion=args.motion or "vmc", client="__none__")
+                   motion=args.motion or "mpc", client="__none__")
         by_stem = {e.stem: e for e in entries}
         picked = []
         for name in args.controllers:
@@ -522,7 +522,7 @@ def main(argv=None) -> int:
             cfg = ask_settings()
         else:
             cfg = dict(env="real" if args.preset == "real" else "sim",
-                       motion=args.motion or "vmc", client="__none__")
+                       motion=args.motion or "mpc", client="__none__")
         picked = ask(groups, entries)
 
     if args.with_sim:
