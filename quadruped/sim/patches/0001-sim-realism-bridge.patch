@@ -1,5 +1,5 @@
 diff --git a/simulate_python/config.py b/simulate_python/config.py
-index 55ed043..4f79123 100644
+index 55ed043..6377f47 100644
 --- a/simulate_python/config.py
 +++ b/simulate_python/config.py
 @@ -1,9 +1,13 @@
@@ -10,7 +10,7 @@ index 55ed043..4f79123 100644
 +# macOS: 回环接口叫 lo0，Linux 才是 lo。写 "lo" 会让 CycloneDDS 报
 +# "does not match an available interface"，和之前 en5 那次是同一类错误。
 +# 上真机时改成 "en5" 并把 DOMAIN_ID 改回 0。
-+INTERFACE = "lo0" # Interface 
++INTERFACE = "lo0" # Interface
  
 -USE_JOYSTICK = 1 # Simulate Unitree WirelessController using a gamepad
 +# 没接手柄必须设 0，否则 SetupJoystick 会抛 pygame.error 直接中断。
