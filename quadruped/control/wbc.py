@@ -162,6 +162,7 @@ class WBC:
     def __init__(self, *, mu: float = 0.6, fz_max: float = 220.0,
                  tau_max: float = 20.0, com=None,
                  kp_foot: float = 3000.0, kd_foot: float = 120.0,
+                 stance_foot: float = 1.0,
                  w_wrench: float = 1e5, w_foot: float = 1e3,
                  w_force: float = 1e-2, w_tau: float = 1e-4,
                  w_slew: float = 0.0,
@@ -174,6 +175,20 @@ class WBC:
         # kp / L² = 3000 N/m，2 kg 的腿对应 6 Hz、阻尼比 0.8 时 kd ≈ 120。
         self.kp_foot = float(kp_foot)
         self.kd_foot = float(kd_foot)
+        # 支撑腿保留多少足端位置任务（1 = 和摆动腿一样追，0 = 一点不追）。
+        #
+        # **闭环里要给 0。** 支撑脚踩在地上，机身系的目标轨迹在往后扫，机身
+        # 没跟上时误差就是「机身落后了多少」，而这个误差没有任何物理界限：
+        # 实测 5 cm × kp_foot 3000 = 150 m/s² 的加速度需求，QP 里没有东西能
+        # 约束它（唯一的天花板是 τ ≤ 20），于是 12 个关节每帧都顶在限幅上、
+        # 输出退化成 bang-bang，机身被顶得乱跳、打滑 200%。
+        #
+        # 支撑腿的任务只有「出力」，位置由地面和步态决定；摆动腿在空中，追
+        # 轨迹才是它的活。按支撑权重线性过渡，换腿那几帧不会突变。
+        #
+        # 默认给 1：这一层的文档说的是「四条腿一视同仁」，离线校验也按那个
+        # 语义写。要关是调用方（`controller._ensure_mpc`）显式关。
+        self.stance_foot = float(stance_foot)
         self.w_wrench = float(w_wrench)
         self.w_foot = float(w_foot)
         self.w_force = float(w_force)
@@ -292,8 +307,17 @@ class WBC:
         target.M = np.asarray(target.M, dtype=float)
 
         ls = self._legs(q12, dq12)
+        wts = [target.weight(l["name"]) for l in ls]
 
-        # 足端 PD → 任务加速度（机体系）
+        # 足端 PD → 任务加速度（机体系）。
+        #
+        # 增益按支撑权重折：`w = 0` 的摆动腿拿满增益去追轨迹，`w = 1` 的支撑
+        # 腿拿到 `stance_foot`（默认 0）—— 见 `__init__` 里 `stance_foot` 的
+        # 那段：支撑脚踩在地上，机身系位置误差就是「机身落后了多少」，没有
+        # 物理上限，追它只会把 12 个关节全顶到力矩限幅。
+        #
+        # `J̇·q̇` 那一项不折：它是运动学量（关节速度造成的足端加速度），
+        # 与「追不追位置」无关，漏掉它支撑腿的 a 就是错的。
         a_cmd = np.zeros((4, 3))
         for i, l in enumerate(ls):
             name = l["name"]
@@ -301,10 +325,10 @@ class WBC:
             v_des = target.vel(name)
             p_err = p_des - l["p"]
             v_err = v_des - l["J"] @ l["dq"]
-            a_cmd[i] = (self.kp_foot * p_err + self.kd_foot * v_err
+            g_foot = 1.0 - (1.0 - self.stance_foot) * wts[i]
+            a_cmd[i] = (g_foot * (self.kp_foot * p_err + self.kd_foot * v_err)
                         - jdot_qdot(leg_model(name).jacobian, l["q"], l["dq"]))
 
-        wts = [target.weight(l["name"]) for l in ls]
         H, g, Tm, hoff = self._cost(ls, wts, target, a_cmd)
         H = 0.5 * (H + H.T) + 1e-9 * np.eye(NX)
 
