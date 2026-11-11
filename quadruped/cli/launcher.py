@@ -231,8 +231,8 @@ def ask(groups: list[Group], entries: list[Entry]) -> list[Entry]:
 # （见 TODO.md Step 3）。默认开等于每次开机都踩在超时线上。
 
 ENVS = [
-    ("sim", "仿真", "lo0 / domain 1"),
-    ("real", "真机", "en5 / domain 0"),
+    ("sim", "仿真", "直接锁 lo0 / domain 1，不问网口"),
+    ("real", "真机", "列网口让你选（en5 / USB 网卡都可能）"),
 ]
 
 MOTIONS = [
@@ -310,9 +310,12 @@ def launch(entries: list[Entry], extra: list[str], preset: str | None = None,
         print("已取消。")
         return 2
 
-    # 环境走 `--preset` 拼在控制器参数前面；用户自己在 `--` 后面给了同名的，
-    # argparse 取最后一个，等于用户覆盖启动器，不用特殊处理。
-    cmd_extra = (["--preset", preset] if preset else []) + extra
+    # 只有仿真才替用户锁死网口（就那一个 lo0，多问一步没意义）。
+    #
+    # 真机**不传 preset**：`choose_endpoint` 只在 `preset is None and iface is
+    # None` 时才列网口，传了 real 就把人钉死在 en5 —— 而真机可能接在 en5，
+    # 也可能是枚举成 en0 的 USB 网卡，猜错等于连不上。让它把网口列出来自己挑。
+    cmd_extra = (["--preset", preset] if preset == "sim" else []) + extra
     env = dict(os.environ)
     if motion:
         env["GO2_MOTION"] = motion
@@ -370,7 +373,7 @@ def main(argv=None) -> int:
     ap.add_argument("controllers", nargs="*",
                     help="控制器文件名，如 keyboard；不给就交互选")
     ap.add_argument("--preset", choices=("sim", "real"), default=None,
-                    help="环境：sim=仿真（lo0/domain1），real=真机（en5/domain0）")
+                    help="环境：sim=仿真（直接 lo0），real=真机（列网口让你选）")
     ap.add_argument("--motion", choices=("vmc", "mpc"), default=None,
                     help="运控：vmc=关闭（单层反馈），mpc=开启（MPC+WBC 三层）")
     ap.add_argument("--sim", action="store_true",
