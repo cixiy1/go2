@@ -30,7 +30,6 @@ import os
 import subprocess
 import sys
 import time
-import unicodedata
 
 _HERE = os.path.dirname(os.path.abspath(__file__))          # quadruped/cli
 ROOT = os.path.dirname(os.path.dirname(_HERE))              # 项目根
@@ -41,18 +40,10 @@ ROOT = os.path.dirname(os.path.dirname(_HERE))              # 项目根
 if __package__ in (None, ""):
     sys.path.insert(0, ROOT)
 
+from quadruped.cli.prompt import Form, ask_line, pad, parse_indices, pick  # noqa: E402
 from quadruped.control.virtual.protocol import check_module, normalize_group  # noqa: E402
 
 CONTROL_DIR = os.path.join(os.path.dirname(_HERE), "control")
-
-
-# 终端显示宽度：中日韩字符占两格。
-def _width(s: str) -> int:
-    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
-
-
-def _pad(s: str, n: int) -> str:
-    return s + " " * max(0, n - _width(s))
 
 
 class Group:
@@ -172,11 +163,11 @@ def render_menu(groups: list[Group], entries: list[Entry]) -> dict[int, Entry]:
             n += 1
             index[n] = e
             if e.runnable:
-                print(f"    {n}  {_pad(e.title, 12)}{e.module}")
+                print(f"    {n}  {pad(e.title, 12)}{e.module}")
                 if e.desc:
-                    print(f"       {_pad('', 12)}{e.desc}")
+                    print(f"       {pad('', 12)}{e.desc}")
             else:
-                print(f"    {n}  {_pad(e.title, 12)}不可用 —— {e.error}")
+                print(f"    {n}  {pad(e.title, 12)}不可用 —— {e.error}")
         print()
     return index
 
@@ -190,11 +181,7 @@ def ask(groups: list[Group], entries: list[Entry]) -> list[Entry]:
     default = next((k for k, e in index.items() if e.runnable), None)
     hint = f"回车 = {default}" if default else "没有可用的"
     while True:
-        try:
-            raw = input(f"选哪个（多选用 1,2 或 1 2；q 退出；{hint}）：").strip()
-        except EOFError:
-            print()
-            return []
+        raw = ask_line(f"选哪个（多选用 1,2 或 1 2；q 退出；{hint}）：")
         if raw in ("q", "Q", "quit", "exit"):
             return []
         if not raw:
@@ -202,20 +189,19 @@ def ask(groups: list[Group], entries: list[Entry]) -> list[Entry]:
                 print("上面没有能跑的控制器。")
                 return []
             return [index[default]]
+        got = parse_indices(raw, len(index))
+        if got is None:
+            print(f"  「{raw}」不是菜单里的编号")
+            continue
         picked: list[Entry] = []
         bad = False
-        for tok in raw.replace(",", " ").split():
-            if not tok.isdigit() or int(tok) not in index:
-                print(f"  「{tok}」不是菜单里的编号")
-                bad = True
-                break
-            e = index[int(tok)]
+        for n in got:
+            e = index[n]
             if not e.runnable:
                 print(f"  {e.title} 现在跑不了：{e.error}")
                 bad = True
                 break
-            if e not in picked:
-                picked.append(e)
+            picked.append(e)
         if bad or not picked:
             continue
         return picked
@@ -253,86 +239,38 @@ MOTIONS = [
     ("mpc", "开启（MPC + WBC）", "三层，回路 p95 8.2 ms，仍在超时"),
 ]
 
-
-def _pick(title: str, rows: list[tuple], default: int = 0) -> str:
-    """单选。rows 是 (key, 标签, 说明)。回车取默认，EOF 也取默认。"""
-    print(f"\n{title}")
-    for i, (_, label, note) in enumerate(rows, 1):
-        print(f"  {i}  {_pad(label, 18)}{note}")
-    hint = f"回车 = {rows[default][1]}"
-    while True:
-        try:
-            raw = input(f"选哪个（{hint}）：").strip()
-        except EOFError:
-            print()
-            return rows[default][0]
-        if not raw:
-            return rows[default][0]
-        if raw.isdigit() and 1 <= int(raw) <= len(rows):
-            return rows[int(raw) - 1][0]
-        print(f"  「{raw}」不是编号")
-
-
-# 能改的通用项。
-#
-# **kp / kd 不在这里**，虽然所有控制器都认这两个参数。它们是跟模型一起标定
-# 出来的量（`KP_REAL` / `KD_REAL`，仿真与真机同一套，见 `Go2Robot.__init__`
-# 那段注释），随手改一条，仿真里调好的步态和真机就不是一回事了，而且改完
-# 症状是「某个速度段开始打滑」，很难联想到刚度。要临时试，走 `--` 透传：
-#     uv run python main.py keyboard -- --kp 40
-#
-# 控制器自己的参数（键盘的 `--max-speed` / `--keys` / `--line-mode`，
-# `main.py` 的 `--height`）同理不进这张表 —— 搬进来就等于替每个控制器维护
-# 一份 argparse，加一个控制器要回来改一次。它们在控制器自己启动时问。
+# 控制端。仿真桥只有 rt/lowcmd 和 rt/sportmodestate，没有运动服务，官方那条
+# 在仿真连不上 —— 选错由控制端自己 `choose_client` 报错，这里不拦。
 CLIENTS = [
     ("__none__", "默认", "由控制端自己挑"),
     ("ours", "自研", "本仓库的 HighLevelController"),
     ("official", "官方", "真机上的原生运动服务，仿真不可用"),
 ]
 
-SETTING_LABELS = [
-    ("环境", "env"), ("运控", "motion"), ("控制端", "client"),
-]
+_ENV_TEXT = {k: f"{label}  {note}" for k, label, note in ENVS}
+_MOTION_TEXT = {k: label for k, label, _ in MOTIONS}
+_CLIENT_TEXT = {k: label for k, label, _ in CLIENTS}
 
 
-def _fmt_setting(cfg: dict, key: str) -> str:
-    v = cfg.get(key)
-    if key == "env":
-        return dict((k, f"{label}  {note}") for k, label, note in ENVS)[v]
-    if key == "motion":
-        return dict((k, label) for k, label, _ in MOTIONS)[v]
-    if key == "client":
-        return dict((k, label) for k, label, _ in CLIENTS)[v]
-    return "默认" if v is None else str(v)
-
-
-# 一屏列出能设的项，输编号改某一项，回车就按这套跑。
-#
-# 不做成"逐项都问一遍"：连着问，全默认也要敲好几次回车。这里是先给一屏现状，
-# 改哪个说哪个。
+# 一屏配置。能改的就这三项，理由见上面那段注释和 `CLIENTS` 上面那段。
 def ask_settings() -> dict:
-    cfg = dict(env="sim-new", motion="vmc", client="__none__")
-    while True:
-        print("\n当前配置（回车 = 按这套跑，输编号改）")
-        for i, (label, key) in enumerate(SETTING_LABELS, 1):
-            print(f"  {i}  {_pad(label, 10)}{_fmt_setting(cfg, key)}")
-        try:
-            raw = input("改哪一项（回车开跑）：").strip()
-        except EOFError:
-            print()
-            return cfg
-        if not raw:
-            return cfg
-        if not raw.isdigit() or not 1 <= int(raw) <= len(SETTING_LABELS):
-            print(f"  「{raw}」不是编号")
-            continue
-        key = SETTING_LABELS[int(raw) - 1][1]
-        if key == "env":
-            cfg["env"] = _pick("环境", ENVS)
-        elif key == "motion":
-            cfg["motion"] = _pick("运控", MOTIONS)
-        else:
-            cfg["client"] = _pick("控制端", CLIENTS)
+    def edit_env(cur):
+        return pick("环境", ENVS, [k for k, *_ in ENVS].index(cur))
+
+    def edit_motion(cur):
+        return pick("运控", MOTIONS, [k for k, *_ in MOTIONS].index(cur))
+
+    def edit_client(cur):
+        return pick("控制端", CLIENTS, [k for k, *_ in CLIENTS].index(cur))
+
+    return Form(
+        [
+            ("环境", "env", lambda v: _ENV_TEXT[v], edit_env),
+            ("运控", "motion", lambda v: _MOTION_TEXT[v], edit_motion),
+            ("控制端", "client", lambda v: _CLIENT_TEXT[v], edit_client),
+        ],
+        dict(env="sim-new", motion="vmc", client="__none__"),
+    ).run()
 
 
 # 起 MuJoCo 仿真器。路径与 mjpython 的判断都在脚本里，这里只管把终端换过去。
