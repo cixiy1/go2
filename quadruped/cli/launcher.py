@@ -229,6 +229,10 @@ ENV_SPEC = {
     "sim-new": ("sim", True),
     "sim": ("sim", False),
     "real": ("real", False),
+    # 不替用户定环境：不传 `--preset`，交给控制器把网口列出来。点名启动
+    # （`main.py keyboard`）走这一档 —— 那条路径以前默认锁死仿真，想连真机
+    # 没有入口，等于网口菜单被顶层吞掉。
+    "ask": (None, False),
 }
 
 # 仿真器起来到能收 lowstate 要多久。mjpython 解包 + 加载 scene.xml + 720 个
@@ -419,7 +423,8 @@ def launch(entries: list[Entry], extra: list[str], cfg: dict,
     env = dict(os.environ)
     env["GO2_MOTION"] = motion
 
-    print(f"\n环境 {preset} / 运控 {motion}")
+    where = {"sim": "仿真", "real": "真机", None: "按网口选"}[preset]
+    print(f"\n环境 {where} / 运控 {motion}")
     os.chdir(ROOT)                       # 让 `-m` 从项目根找包
     cmds = [[sys.executable, "-m", e.module] + cmd_extra for e in entries]
 
@@ -464,6 +469,14 @@ def launch(entries: list[Entry], extra: list[str], cfg: dict,
     return code
 
 
+# `--preset` 到配置屏那一档的映射。None 不是「仿真」，是「没指定」——
+# 这两个必须分开，否则点名启动时网口菜单就被默认值吞掉了。
+def _env_key(preset: str | None) -> str:
+    if preset == "real":
+        return "real"
+    return "sim" if preset == "sim" else "ask"
+
+
 def main(argv=None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -503,8 +516,9 @@ def main(argv=None) -> int:
         return 0
 
     if args.controllers:
-        # 直接点名：不再问，缺的用默认（仿真 / MPC+WBC）。
-        cfg = dict(env="real" if args.preset == "real" else "sim",
+        # 直接点名：运控用默认（MPC+WBC），环境只看 `--preset` ——
+        # 没给就交给控制器列网口，不替人锁死仿真（否则真机连不上）。
+        cfg = dict(env=_env_key(args.preset),
                    motion=args.motion or "mpc", client="__none__")
         by_stem = {e.stem: e for e in entries}
         picked = []
@@ -522,7 +536,7 @@ def main(argv=None) -> int:
         if args.preset is None and args.motion is None:
             cfg = ask_settings()
         else:
-            cfg = dict(env="real" if args.preset == "real" else "sim",
+            cfg = dict(env=_env_key(args.preset),
                        motion=args.motion or "mpc", client="__none__")
         picked = ask(groups, entries)
 

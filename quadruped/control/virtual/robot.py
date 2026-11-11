@@ -183,12 +183,24 @@ def _pick(options: list[dict], default_no: int, prompt: str) -> int:
 def choose_endpoint(preset=None, *, iface=None, domain=None) -> Endpoint:
     if preset is None and iface is None:
         cands = _interfaces()
+        # 默认项给第一个「真机网段」的网卡，不是 lo0。
+        #
+        # 原来固定回车 = 1，而第一项恒为 lo0 —— 想连真机的人一按回车就连到仿真器
+        # 上，症状是 connect 超时，看不出是选错了。只有全都没有真机网段时才回落到
+        # 第 1 项（那种情况下除了 lo0 也没别的可选）。
+        default_no = 1
+        for i, it in enumerate(cands, 1):
+            if Go2Robot.is_real_robot_net(it["ip"]):
+                default_no = i
+                break
         print("\n网口：")
         for i, it in enumerate(cands, 1):
-            print(f"  {i}) {it['name']:<6s} {it['note']}")
+            mark = "  ← 默认" if i == default_no else ""
+            print(f"  {i}) {it['name']:<6s} {it['note']}{mark}")
         n = _pick(cands,
-                  default_no=1,
-                  prompt=(f"  选择 1-{len(cands)}，回车 = 1："
+                  default_no=default_no,
+                  prompt=(f"  选择 1-{len(cands)}，回车 = {default_no}"
+                          f"（{cands[default_no - 1]['name']}）："
                           if len(cands) > 1 else "  回车继续："))
         iface = cands[n - 1]["name"]
         if not sys.stdin.isatty():
