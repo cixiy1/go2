@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 520" font-family="-apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif">
+  <rect width="880" height="520" rx="10" fill="#fcfcfb"/>
+  <text x="30" y="34" font-size="17" font-weight="600" fill="#1a1a1a">三个对象怎么连起来，以及依赖朝哪边</text>
+  <text x="30" y="55" font-size="12" fill="#6b6b66">持有是双向的，依赖是单向的 —— 这两件事分开看，架构才立得住</text>
+
+  <!-- Go2Robot -->
+  <rect x="30" y="86" width="180" height="104" rx="10" fill="#f4f4f1" stroke="#d6d6d1" stroke-width="1.5"/>
+  <text x="46" y="110" font-size="14" font-weight="600" fill="#1a1a1a">Go2Robot</text>
+  <text x="46" y="129" font-size="10.5" fill="#8a8a84">sim/go2_robot.py · 312 行</text>
+  <line x1="46" y1="139" x2="194" y2="139" stroke="#e2e2dc"/>
+  <text x="46" y="157" font-size="10.5" fill="#55554f">选环境 / 建控制器</text>
+  <text x="46" y="173" font-size="10.5" fill="#55554f">转发读数 / 收工</text>
+
+  <!-- Go2Controller -->
+  <rect x="290" y="86" width="220" height="130" rx="10" fill="#ffffff" stroke="#d9d9d4" stroke-width="1.5"/>
+  <text x="306" y="110" font-size="14" font-weight="600" fill="#1a1a1a">Go2Controller</text>
+  <text x="306" y="129" font-size="10.5" fill="#8a8a84">sim/go2_controller.py · 2162 行</text>
+  <line x1="306" y1="139" x2="494" y2="139" stroke="#e8e8e2"/>
+  <text x="306" y="157" font-size="10.5" fill="#55554f">DDS 参与者 / 两个订阅</text>
+  <text x="306" y="173" font-size="10.5" fill="#55554f">解析 IK / 步态相位 / 回路</text>
+  <text x="306" y="189" font-size="10.5" fill="#55554f">姿态序列 / 里程计</text>
+  <text x="306" y="205" font-size="10.5" fill="#b5432f">不知道「前进两米」是什么</text>
+
+  <!-- HighLevelController -->
+  <rect x="600" y="86" width="250" height="130" rx="10" fill="#ffffff" stroke="#d9d9d4" stroke-width="1.5"/>
+  <text x="616" y="110" font-size="14" font-weight="600" fill="#1a1a1a">HighLevelController</text>
+  <text x="616" y="129" font-size="10.5" fill="#8a8a84">sim/go2_high_level.py · 837 行</text>
+  <line x1="616" y1="139" x2="834" y2="139" stroke="#e8e8e2"/>
+  <text x="616" y="157" font-size="10.5" fill="#55554f">前进 / 横移 / 转身 / 蹲起</text>
+  <text x="616" y="173" font-size="10.5" fill="#55554f">跳跃（bio / mech）</text>
+  <text x="616" y="189" font-size="10.5" fill="#55554f">动作序列编排</text>
+  <text x="616" y="205" font-size="10.5" fill="#b5432f">不知道 DDS 存在</text>
+
+  <!-- robot -> controller -->
+  <path d="M210 138 H286" stroke="#3a3a36" stroke-width="1.8" fill="none" marker-end="url(#a)"/>
+  <text x="216" y="128" font-size="10.5" fill="#55554f">self.controller</text>
+
+  <!-- controller -> high_level（构造时挂上去） -->
+  <path d="M510 138 H596" stroke="#3a3a36" stroke-width="1.8" fill="none" marker-end="url(#a)"/>
+  <text x="516" y="128" font-size="10.5" fill="#55554f">构造时挂上</text>
+
+  <!-- high_level -> controller（回指） -->
+  <path d="M596 190 H514" stroke="#b5432f" stroke-width="1.6" fill="none" stroke-dasharray="5 4" marker-end="url(#r)"/>
+  <text x="520" y="208" font-size="10.5" fill="#b5432f">controller（回指）</text>
+
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#3a3a36"/>
+    </marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#b5432f"/>
+    </marker>
+  </defs>
+
+  <!-- 循环依赖说明 -->
+  <rect x="30" y="240" width="400" height="96" rx="9" fill="#fdf6f4" stroke="#e4c4bb"/>
+  <text x="46" y="262" font-size="12" font-weight="600" fill="#b5432f">为什么不用顶层 import</text>
+  <text x="46" y="282" font-size="10.5" fill="#55554f">high_level 要用 controller 的 MIN_HEIGHT 和 _wrap_pi，</text>
+  <text x="46" y="299" font-size="10.5" fill="#55554f">controller 要造 high_level —— 顶层互相 import 会成环。</text>
+  <text x="46" y="320" font-size="10.5" fill="#55554f">解法：在 __init__ 里延迟导入，此时本模块已加载完。</text>
+
+  <!-- 依赖方向 -->
+  <rect x="456" y="240" width="394" height="96" rx="9" fill="#f6f8fa" stroke="#c9d6e0"/>
+  <text x="472" y="262" font-size="12" font-weight="600" fill="#2c5f8a">依赖只有一条</text>
+  <text x="472" y="282" font-size="10.5" fill="#55554f">控制回路里从不调用 high_level 的方法。</text>
+  <text x="472" y="299" font-size="10.5" fill="#55554f">controller 只负责「造出来 + 挂在自己身上」。</text>
+  <text x="472" y="320" font-size="10.5" fill="#55554f">想拆掉动作层，改 controller 一行都不用动。</text>
+
+  <!-- 四条断言 -->
+  <rect x="30" y="356" width="820" height="86" rx="9" fill="#f7f6f3" stroke="#e4e0d8"/>
+  <text x="46" y="378" font-size="12" font-weight="600" fill="#1a1a1a">hierarchy() 里的四条断言</text>
+  <text x="46" y="398" font-size="10.5" fill="#55554f">isinstance(c, Go2Controller)　·　isinstance(hl, HighLevelController)　·　c.__dict__["high_level"] is hl　·　hl.controller is c</text>
+  <text x="46" y="418" font-size="10.5" fill="#8a8a84">前两条防类型退化，后两条防「拍平」成兄弟属性 —— 那种写法改一个另一个不知道，出问题时已经在几百行之后。</text>
+  <text x="46" y="434" font-size="10.5" fill="#8a8a84">结构性腐烂靠 code review 抓不住，断言能。任何一条不成立就抛异常，不给它悄悄退化。</text>
+
+  <!-- 后端同构 -->
+  <text x="30" y="476" font-size="12" font-weight="600" fill="#1a1a1a">两个后端，同一个形状</text>
+  <text x="30" y="496" font-size="10.5" fill="#55554f">OursBackend.client = controller.high_level　——　高层本身实现了 SportClient 那套方法名（Init / BalanceStand / Move / StopMove / Damp），所以不用再包一层适配器。</text>
+  <text x="30" y="512" font-size="10.5" fill="#55554f">OfficialBackend.client = unitree_sdk2py 的 SportClient。两者对上层暴露的属性一模一样，按键循环和收工逻辑只有一份。</text>
+</svg>

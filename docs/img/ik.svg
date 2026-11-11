@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 430" font-family="-apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif">
+  <rect width="860" height="430" rx="10" fill="#fcfcfb"/>
+  <text x="40" y="36" font-size="17" font-weight="600" fill="#1a1a1a">一条腿的解析逆解，分两步算完</text>
+  <text x="40" y="58" font-size="12.5" fill="#6b6b66">没有数值迭代，500 Hz 里跑得起 —— 每个控制周期 12 条腿各算一次</text>
+
+  <!-- ============ 左：abduction ============ -->
+  <text x="60" y="96" font-size="13.5" font-weight="600" fill="#b5432f">第 1 步　外展角 q1</text>
+  <text x="60" y="115" font-size="11.5" fill="#8a8a84">y-z 投影，纯几何</text>
+
+  <!-- 髋原点 -->
+  <circle cx="220" cy="160" r="5" fill="#1a1a1a"/>
+  <text x="200" y="150" font-size="12" fill="#3a3a36">髋部原点</text>
+
+  <!-- 足端方向射线 -->
+  <line x1="220" y1="160" x2="220" y2="262" stroke="#1a1a1a" stroke-width="2"/>
+  <circle cx="220" cy="262" r="4" fill="#b5432f"/>
+  <text x="228" y="280" font-size="12" fill="#3a3a36">足端 F</text>
+
+  <!-- 俯仰关节方向射线，长度 d -->
+  <line x1="220" y1="160" x2="272" y2="205" stroke="#2c5f8a" stroke-width="2"/>
+  <circle cx="272" cy="205" r="4" fill="#2c5f8a"/>
+  <text x="280" y="205" font-size="12" fill="#3a3a36">俯仰关节</text>
+
+  <!-- q1 角弧 -->
+  <path d="M220 200 A40 40 0 0 1 253 190" stroke="#b5432f" stroke-width="1.8" fill="none"/>
+  <text x="238" y="228" font-size="13" font-style="italic" fill="#b5432f">q1</text>
+
+  <!-- 侧向偏移标注 -->
+  <line x1="220" y1="300" x2="272" y2="300" stroke="#9a9a94" stroke-width="1" stroke-dasharray="3 3"/>
+  <line x1="272" y1="205" x2="272" y2="300" stroke="#9a9a94" stroke-width="1" stroke-dasharray="3 3"/>
+  <text x="222" y="318" font-size="11" fill="#8a8a84">d = THIGH_Y = 0.0955 m</text>
+
+  <text x="60" y="352" font-size="11.5" fill="#55554f">俯仰关节在 y-z 投影里必须落在 s·d 上，</text>
+  <text x="60" y="370" font-size="11.5" fill="#55554f">所以 q1 是两条射线的夹角，一次 atan2 得出。</text>
+
+  <!-- 分隔 -->
+  <line x1="430" y1="88" x2="430" y2="380" stroke="#e6e2da" stroke-width="1"/>
+
+  <!-- ============ 右：两连杆 ============ -->
+  <text x="470" y="96" font-size="13.5" font-weight="600" fill="#2c5f8a">第 2 步　髋角 q2 / 膝角 q3</text>
+  <text x="470" y="115" font-size="11.5" fill="#8a8a84">x-z 平面，两连杆余弦定理</text>
+
+  <!-- 可达边界圆弧 -->
+  <path d="M500 160 A150 150 0 0 1 800 160" stroke="#e0dcd4" stroke-width="1.6" fill="none" stroke-dasharray="5 5"/>
+  <text x="650" y="42" font-size="11" fill="#a8a8a2" text-anchor="middle">l1 + l2 = 0.426 m</text>
+
+  <!-- 髋原点 -->
+  <circle cx="650" cy="160" r="5" fill="#1a1a1a"/>
+  <text x="600" y="150" font-size="12" fill="#3a3a36">髋 O</text>
+
+  <!-- 大腿 -->
+  <line x1="650" y1="160" x2="726" y2="222" stroke="#2c5f8a" stroke-width="3" stroke-linecap="round"/>
+  <!-- 小腿 -->
+  <line x1="726" y1="222" x2="686" y2="292" stroke="#2c5f8a" stroke-width="3" stroke-linecap="round"/>
+  <!-- 直线距离 L -->
+  <line x1="650" y1="160" x2="686" y2="292" stroke="#b5432f" stroke-width="1.6" stroke-dasharray="5 4"/>
+
+  <circle cx="726" cy="222" r="4.5" fill="#1a1a1a"/>
+  <circle cx="686" cy="292" r="4.5" fill="#b5432f"/>
+
+  <text x="700" y="200" font-size="11.5" fill="#2c5f8a">l1 = 0.213</text>
+  <text x="722" y="272" font-size="11.5" fill="#2c5f8a">l2 = 0.213</text>
+  <text x="612" y="238" font-size="11.5" fill="#b5432f">L</text>
+  <text x="700" y="312" font-size="12" fill="#3a3a36">足端</text>
+
+  <text x="470" y="352" font-size="11.5" fill="#55554f">cos q3 = (L² − l1² − l2²) / (2·l1·l2)，取负分支；</text>
+  <text x="470" y="370" font-size="11.5" fill="#55554f">L 超出 [l1−l2, l1+l2] 时夹到边界并标 ok=False，不抛异常。</text>
+
+  <!-- 底部 -->
+  <rect x="40" y="392" width="780" height="26" rx="6" fill="#f7f6f3" stroke="#e4e0d8"/>
+  <text x="58" y="410" font-size="11.5" fill="#55554f">后腿俯仰范围单列：LIMITS_REAR_THIGH = (−0.5236, 4.5379)，前限比前腿宽松 0.35 rad。</text>
+</svg>

@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 470" font-family="-apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif">
+  <rect width="880" height="470" rx="10" fill="#fcfcfb"/>
+  <text x="26" y="30" font-size="16.5" font-weight="600" fill="#1a1a1a">同一套时间轴，两种腿的分工</text>
+  <text x="26" y="49" font-size="11.5" fill="#6b6b66">侧视：深色为近侧两腿，浅色为远侧两腿</text>
+
+  <!-- ============ bio ============ -->
+  <text x="26" y="82" font-size="13" font-weight="600" fill="#b5432f">bio 仿生</text>
+  <text x="26" y="99" font-size="11" fill="#8a8a84">后腿发力</text>
+
+  <!-- 蓄力 -->
+  <g transform="translate(112,72)">
+    <path d="M30 16 L44 40 L35 70" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M50 16 L64 40 L55 70" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="0" y="0" width="84" height="20" rx="9" fill="#e9e5dc" stroke="#c7c2b7" stroke-width="1.3"/>
+    <path d="M20 20 L34 44 L25 74" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M60 20 L74 44 L65 74" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="20" cy="20" r="2.3" fill="#b5432f"/>
+    <circle cx="60" cy="20" r="2.3" fill="#b5432f"/>
+    <line x1="-14" y1="80" x2="98" y2="80" stroke="#d5d0c6" stroke-width="1.4"/>
+    <text x="42" y="97" font-size="10.5" fill="#8a8a84" text-anchor="middle">蓄力</text>
+  </g>
+
+  <!-- 蹬伸 -->
+  <g transform="translate(300,72)">
+    <path d="M30 16 L37 42 L31 74" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M50 16 L57 46 L52 82" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="0" y="0" width="84" height="20" rx="9" fill="#e9e5dc" stroke="#c7c2b7" stroke-width="1.3"/>
+    <path d="M20 20 L27 46 L21 78" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M60 20 L67 50 L62 86" stroke="#b5432f" stroke-width="2.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="20" cy="20" r="2.3" fill="#b5432f"/>
+    <circle cx="60" cy="20" r="2.3" fill="#b5432f"/>
+    <line x1="-14" y1="90" x2="98" y2="90" stroke="#d5d0c6" stroke-width="1.4"/>
+    <text x="42" y="107" font-size="10.5" fill="#8a8a84" text-anchor="middle">蹬伸（后腿更深）</text>
+  </g>
+
+  <!-- 空中 -->
+  <g transform="translate(488,34)">
+    <path d="M30 16 L18 28 L6 36" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M50 16 L62 26 L74 34" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="0" y="0" width="84" height="20" rx="9" fill="#e9e5dc" stroke="#c7c2b7" stroke-width="1.3"/>
+    <path d="M20 20 L8 32 L-4 40" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M60 20 L72 30 L84 38" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="20" cy="20" r="2.3" fill="#b5432f"/>
+    <circle cx="60" cy="20" r="2.3" fill="#b5432f"/>
+    <line x1="-16" y1="100" x2="100" y2="100" stroke="#d5d0c6" stroke-width="1.4" stroke-dasharray="4 4"/>
+    <text x="42" y="117" font-size="10.5" fill="#8a8a84" text-anchor="middle">空中（前伸后拖）</text>
+  </g>
+
+  <!-- 触地 -->
+  <g transform="translate(676,60)">
+    <path d="M30 16 L20 32 L7 62" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M50 16 L60 38 L71 66" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="0" y="0" width="84" height="20" rx="9" fill="#e9e5dc" stroke="#c7c2b7" stroke-width="1.3"/>
+    <path d="M20 20 L10 36 L-3 66" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M60 20 L70 42 L81 70" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="20" cy="20" r="2.3" fill="#b5432f"/>
+    <circle cx="60" cy="20" r="2.3" fill="#b5432f"/>
+    <line x1="-16" y1="75" x2="100" y2="75" stroke="#d5d0c6" stroke-width="1.4"/>
+    <text x="42" y="92" font-size="10.5" fill="#8a8a84" text-anchor="middle">触地（前腿先接）</text>
+  </g>
+
+  <line x1="26" y1="190" x2="854" y2="190" stroke="#e6e2da" stroke-width="1"/>
+
+  <!-- ============ mech ============ -->
+  <text x="26" y="216" font-size="13" font-weight="600" fill="#2c5f8a">mech 机械</text>
+  <text x="26" y="233" font-size="11" fill="#8a8a84">四腿同相</text>
+
+  <g transform="translate(112,212)">
+    <path d="M30 16 L44 40 L35 70" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M50 16 L64 40 L55 70" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="0" y="0" width="84" height="20" rx="9" fill="#e9e5dc" stroke="#c7c2b7" stroke-width="1.3"/>
+    <path d="M20 20 L34 44 L25 74" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M60 20 L74 44 L65 74" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="20" cy="20" r="2.3" fill="#2c5f8a"/>
+    <circle cx="60" cy="20" r="2.3" fill="#2c5f8a"/>
+    <line x1="-14" y1="80" x2="98" y2="80" stroke="#d5d0c6" stroke-width="1.4"/>
+    <text x="42" y="97" font-size="10.5" fill="#8a8a84" text-anchor="middle">蓄力</text>
+  </g>
+
+  <g transform="translate(300,212)">
+    <path d="M30 16 L36 42 L30 74" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M50 16 L56 44 L51 78" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="0" y="0" width="84" height="20" rx="9" fill="#e9e5dc" stroke="#c7c2b7" stroke-width="1.3"/>
+    <path d="M20 20 L26 44 L20 76" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M60 20 L66 48 L61 90" stroke="#2c5f8a" stroke-width="2.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="20" cy="20" r="2.3" fill="#2c5f8a"/>
+    <circle cx="60" cy="20" r="2.3" fill="#2c5f8a"/>
+    <line x1="-14" y1="93" x2="98" y2="93" stroke="#d5d0c6" stroke-width="1.4"/>
+    <text x="42" y="110" font-size="10.5" fill="#8a8a84" text-anchor="middle">后腿 +45mm 补重心</text>
+  </g>
+
+  <g transform="translate(488,178)">
+    <path d="M30 16 L33 34 L31 56" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M50 16 L53 34 L51 56" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="0" y="0" width="84" height="20" rx="9" fill="#e9e5dc" stroke="#c7c2b7" stroke-width="1.3"/>
+    <path d="M20 20 L23 40 L21 62" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M60 20 L63 40 L61 62" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="20" cy="20" r="2.3" fill="#2c5f8a"/>
+    <circle cx="60" cy="20" r="2.3" fill="#2c5f8a"/>
+    <line x1="-14" y1="100" x2="98" y2="100" stroke="#d5d0c6" stroke-width="1.4" stroke-dasharray="4 4"/>
+    <text x="42" y="117" font-size="10.5" fill="#8a8a84" text-anchor="middle">伸直着飞</text>
+  </g>
+
+  <g transform="translate(676,212)">
+    <path d="M30 16 L40 34 L35 58" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M50 16 L60 34 L55 58" stroke="#d0cbc1" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="0" y="0" width="84" height="20" rx="9" fill="#e9e5dc" stroke="#c7c2b7" stroke-width="1.3"/>
+    <path d="M20 20 L30 40 L25 64" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M60 20 L70 40 L65 64" stroke="#3a3a36" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="20" cy="20" r="2.3" fill="#2c5f8a"/>
+    <circle cx="60" cy="20" r="2.3" fill="#2c5f8a"/>
+    <line x1="-14" y1="70" x2="98" y2="70" stroke="#d5d0c6" stroke-width="1.4"/>
+    <text x="42" y="87" font-size="10.5" fill="#8a8a84" text-anchor="middle">屈腿缓冲</text>
+  </g>
+
+  <!-- ============ 结论 ============ -->
+  <rect x="26" y="342" width="828" height="64" rx="8" fill="#f7f6f3" stroke="#e4e0d8"/>
+  <text x="42" y="362" font-size="11.5" fill="#3a3a36">bio：前腿伸前 + 后腿后拖会产生低头角动量，脚在空中踩不住地面，只能靠 −0.06 rad 俯仰反向补，落地再补 +0.10。</text>
+  <text x="42" y="381" font-size="11.5" fill="#3a3a36">mech：质心偏后，四腿同速伸会让机身仰头 −40°，所以只有踩地时才给后腿 +45mm 偏置；空中还带着它就是仰头的根源。</text>
+  <text x="42" y="398" font-size="10.5" fill="#8a8a84">站立实测关节角：q2 = +0.949 rad、q3 = −1.899 rad，机身高度 0.270 m，足端可达半径 0.426 m。</text>
+
+  <text x="26" y="432" font-size="10.5" fill="#a8a8a2">时间轴：蓄力 0.18s → 蹬伸 0.13s → 空中 0.42s → 触地 0.22s → 回正 0.53s，全程 1.48s</text>
+</svg>

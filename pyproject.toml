@@ -1,0 +1,17 @@
+[project]
+name = "go2"
+version = "0.1.0"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "pynput>=1.8.2",
+    "unitree-sdk2py",
+]
+
+[tool.uv.sources]
+unitree-sdk2py = { path = "unitree_sdk2_python", editable = true }
+
+[dependency-groups]
+sim = [
+    "mujoco>=3.17.0",
+    "pygame>=2.6.1",
+]

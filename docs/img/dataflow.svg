@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 650" font-family="-apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif">
+  <rect width="980" height="650" rx="10" fill="#fcfcfb"/>
+  <text x="28" y="30" font-size="17" font-weight="600" fill="#1a1a1a">一次 forward(2.0) 到底走了哪条路</text>
+  <text x="28" y="51" font-size="12" fill="#6b6b66">调用方只看到「走两米然后停」，中间隔着一条 200 Hz 回路和两个 DDS 话题</text>
+
+  <defs>
+    <marker id="s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#3a3a36"/>
+    </marker>
+    <marker id="sr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#b5432f"/>
+    </marker>
+    <marker id="sb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#2c5f8a"/>
+    </marker>
+  </defs>
+
+  <!-- 泳道头 -->
+  <rect x="52" y="70" width="116" height="28" rx="6" fill="#f4f4f1" stroke="#d6d6d1"/>
+  <text x="110" y="89" font-size="11.5" font-weight="600" fill="#1a1a1a" text-anchor="middle">调用方</text>
+
+  <rect x="302" y="70" width="116" height="28" rx="6" fill="#ffffff" stroke="#d9d9d4"/>
+  <text x="360" y="89" font-size="11.5" font-weight="600" fill="#1a1a1a" text-anchor="middle">HighLevel</text>
+
+  <rect x="562" y="70" width="116" height="28" rx="6" fill="#ffffff" stroke="#d9d9d4"/>
+  <text x="620" y="89" font-size="11.5" font-weight="600" fill="#1a1a1a" text-anchor="middle">Controller</text>
+
+  <rect x="812" y="70" width="130" height="28" rx="6" fill="#fdf6f4" stroke="#e4c4bb"/>
+  <text x="877" y="89" font-size="11.5" font-weight="600" fill="#b5432f" text-anchor="middle">DDS / 狗</text>
+
+  <!-- 竖线 -->
+  <line x1="110" y1="98" x2="110" y2="614" stroke="#dcdcd6" stroke-width="1.4" stroke-dasharray="4 4"/>
+  <line x1="360" y1="98" x2="360" y2="614" stroke="#dcdcd6" stroke-width="1.4" stroke-dasharray="4 4"/>
+  <line x1="620" y1="98" x2="620" y2="614" stroke="#dcdcd6" stroke-width="1.4" stroke-dasharray="4 4"/>
+  <line x1="877" y1="98" x2="877" y2="614" stroke="#dcdcd6" stroke-width="1.4" stroke-dasharray="4 4"/>
+
+  <!-- 1 调用 -->
+  <path d="M110 124 H356" stroke="#3a3a36" stroke-width="1.7" fill="none" marker-end="url(#s)"/>
+  <text x="118" y="118" font-size="10.5" fill="#55554f">forward(2.0)</text>
+
+  <!-- 2 设速度 -->
+  <path d="M360 158 H616" stroke="#3a3a36" stroke-width="1.7" fill="none" marker-end="url(#s)"/>
+  <text x="368" y="152" font-size="10.5" fill="#55554f">Move(0.3, 0, 0)　写进 velocity_command</text>
+
+  <!-- 循环框 -->
+  <rect x="46" y="182" width="892" height="290" rx="8" fill="none" stroke="#c9c4ba" stroke-width="1.3" stroke-dasharray="6 5"/>
+  <text x="60" y="202" font-size="10.5" fill="#8a8a84">loop　直到里程计累计 2.0 m</text>
+
+  <!-- 3 回路自环 -->
+  <path d="M620 226 H690 V246 H624" stroke="#2c5f8a" stroke-width="1.5" fill="none" marker-end="url(#sb)"/>
+  <text x="608" y="222" font-size="10.5" fill="#2c5f8a" text-anchor="end">200 Hz</text>
+  <text x="608" y="240" font-size="10.5" fill="#55554f" text-anchor="end">foot_target → ik_all</text>
+  <text x="608" y="256" font-size="10.5" fill="#55554f" text-anchor="end">→ LowCmd_ → CRC</text>
+
+  <!-- 4 发布 -->
+  <path d="M620 300 H873" stroke="#3a3a36" stroke-width="1.7" fill="none" marker-end="url(#s)"/>
+  <text x="640" y="294" font-size="10.5" fill="#55554f">rt/lowcmd　（q / kp / kd / tau）</text>
+
+  <!-- 5 lowstate -->
+  <path d="M877 348 H624" stroke="#b5432f" stroke-width="1.6" fill="none" marker-end="url(#sr)"/>
+  <text x="855" y="342" font-size="10.5" fill="#b5432f" text-anchor="end">rt/lowstate　500 Hz</text>
+  <text x="855" y="364" font-size="9.5" fill="#a8a8a2" text-anchor="end">q / dq / rpy / gyro</text>
+
+  <!-- 6 sportmodestate -->
+  <path d="M877 396 H624" stroke="#b5432f" stroke-width="1.6" fill="none" marker-end="url(#sr)"/>
+  <text x="855" y="390" font-size="10.5" fill="#b5432f" text-anchor="end">rt/sportmodestate</text>
+  <text x="855" y="412" font-size="9.5" fill="#a8a8a2" text-anchor="end">pos / vel → 里程计</text>
+
+  <!-- 7 回给高层 -->
+  <path d="M616 448 H364" stroke="#2c5f8a" stroke-width="1.6" fill="none" marker-end="url(#sb)"/>
+  <text x="372" y="442" font-size="10.5" fill="#2c5f8a">pos / vel　判断走了多少</text>
+  <text x="372" y="460" font-size="9.5" fill="#a8a8a2">没到 2 m → 继续下一拍</text>
+
+  <!-- 8 停止 -->
+  <path d="M360 520 H616" stroke="#3a3a36" stroke-width="1.7" fill="none" marker-end="url(#s)"/>
+  <text x="368" y="514" font-size="10.5" fill="#55554f">StopMove()</text>
+
+  <!-- 9 返回 -->
+  <path d="M360 560 H114" stroke="#3a3a36" stroke-width="1.4" fill="none" stroke-dasharray="5 4" marker-end="url(#s)"/>
+  <text x="122" y="554" font-size="10.5" fill="#8a8a84">返回</text>
+
+  <!-- 说明 -->
+  <text x="28" y="632" font-size="10.5" fill="#8a8a84">回路的实际节奏由 loop_stats() 暴露：真机抖不抖先看这个。均值超过 6 ms、或峰值跳到十几毫秒，是时序问题，不是参数问题。</text>
+</svg>
