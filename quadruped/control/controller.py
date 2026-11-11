@@ -818,6 +818,27 @@ class Go2Controller:
     # 前馈并把 `_mpc_miss` 记上 —— 拿一份 0.2 s 前的力当现在的力，机身会被
     # 已经消失的扰动继续推。
     MPC_STALE = 0.2
+    # MPC 算出来的力矩（Mx/My/Mz）要不要叠到 WBC 的目标上。**关。**
+    #
+    # 姿态和航向已经由 `_mpc_trim`（200 Hz，`_wrench_cmd` 那一套律）在管，
+    # MPC 那一份是同一个自由度的第二个控制器，而且带 20~50 ms 的延迟。
+    # 两者叠加的结果实测（mech，5~6 s）：
+    #
+    #   工况                叠加 MPC 的 M        只有快环
+    #   前进 vx 0.20        roll 4.6 pit 3.4    roll 3.9 pit 3.2
+    #   横移 vy 0.20        roll 5.6 pit 4.7    roll 4.9 pit 4.8
+    #   原地转 0.8 rad/s    roll 17.6~19.4      roll 2.8~6.2
+    #                       pit  16.2~18.6      pit  2.6~4.5
+    #                       航向 −128°          航向 −153°
+    #
+    # 转向那一行是 3/3 次复现的（指令 0.8 rad/s × 6 s，理想约 −229°）。
+    # 转得越快越糟：MPC 的参考航向按指令积分、机身跟不上，误差全进 Mz，
+    # 而这份 Mz 又要经 WBC 在摩擦锥里凑出来 —— 四条腿互相拧着，机身被
+    # 侧向摇起来（roll 峰峰 18° 就是这么来的），航向反而更追不上。
+    #
+    # 关掉之后 MPC 只提供力和力分配，和 `MPC_W_RPY` / `MPC_W_OMEGA` 那两个
+    # 权重不冲突：它们管的仍然是「用多大的力去压这个姿态误差」。
+    MPC_USE_TORQUE = False
     # WBC 的关节力矩上限。**不能沿用 WRENCH_TAU_MAX=14**：那是给「位置伺服
     # 为主 + 前馈为辅」配的；WBC 是力矩主力，双支撑小跑静态承重就要 17.2 N·m，
     # 压到 14 会把正常承重削掉、机身直接塌（见 wbc.py 顶部）。20 留 3.7 给
@@ -2335,9 +2356,13 @@ class Go2Controller:
             dq_meas = self._dq_lp()
             # 合成顺序：MPC 的前馈 + 200 Hz 的修正，**最后一起限幅**。先限再加
             # 会把修正量整个丢掉（MPC 那份常年贴着上限，加完再限就是原地不动）。
+            #
+            # 力矩**只用快环那一份**，MPC 的 M 不进 WBC。理由见
+            # `MPC_USE_TORQUE`：两份力矩在同一个自由度上互相拧。
             dF, dM = self._mpc_trim(vx, vy, yaw, a)
+            M_ff = np.asarray(plan["M"], float) if self.MPC_USE_TORQUE else 0.0
             F, M = self._clamp_wrench(np.asarray(plan["F"], float) + dF,
-                                      np.asarray(plan["M"], float) + dM)
+                                      M_ff + dM)
             tgt = WBCTarget(feet=feet_tgt, feet_vel=feet_vel,
                             weights=dict(self._stance_w),
                             F=F, M=M, force=plan["force"])

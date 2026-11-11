@@ -242,7 +242,8 @@ def _home_feet():
 def run(mode: str, action: str, vx: float, dur: float, slope: float,
         push_n: float, kp: float | None, style: str, gait_over: dict,
         realism: bool = True, wrench: str = "mpc",
-        burst: bool = False, vy: float = 0.0) -> dict:
+        burst: bool = False, vy: float = 0.0,
+        yaw: float = 0.0) -> dict:
     from quadruped.control.controller import (CTRL_LEGS, SPORT_Z_BIAS,
                                               Go2Controller, make_gait)
 
@@ -332,7 +333,8 @@ def run(mode: str, action: str, vx: float, dur: float, slope: float,
         if moving and c._h_des is None:
             c._h_des = c.body_height()
         c._vel_target = [vx if moving else 0.0,
-                         vy if moving else 0.0, 0.0]
+                         vy if moving else 0.0,
+                         yaw if moving else 0.0]
         sim.push(push_n if (action == "push"
                             and 0.55 * dur < t < 0.55 * dur + 0.3) else 0.0)
         if burst:
@@ -367,7 +369,7 @@ def run(mode: str, action: str, vx: float, dur: float, slope: float,
     res = _metrics(rec, vx, action, dur, burst, vy)
     res["mode"] = mode
     res["action"] = action
-    res["vx"], res["vy"] = vx, vy
+    res["vx"], res["vy"], res["yaw"] = vx, vy, yaw
     res["loop"] = c.loop_stats()
     res["force"] = c.mpc_stats() if mode == "mpc" else {}
     res["burst"] = burst
@@ -508,6 +510,8 @@ def main() -> int:
     ap.add_argument("--vx", type=float, default=0.25)
     ap.add_argument("--vy", type=float, default=0.0,
                     help="横移速度，正为左。默认 0 = 只测前进")
+    ap.add_argument("--yaw", type=float, default=0.0,
+                    help="转向角速度 rad/s，正为逆时针。默认 0 = 不转")
     ap.add_argument("--dur", type=float, default=6.0)
     ap.add_argument("--slope", type=float, default=None,
                     help="横坡角度（度），默认按 action 取：slope=5，其余 0")
@@ -532,10 +536,10 @@ def main() -> int:
     modes = ["vmc", "mpc"] if a.ab else [a.mode]
     got = []
     for m in modes:
-        print(f"\n[{m}] {a.action}  slope={slope}°  vx={a.vx}  vy={a.vy}  dur={a.dur}"
+        print(f"\n[{m}] {a.action}  slope={slope}°  vx={a.vx}  vy={a.vy}  yaw={a.yaw}  dur={a.dur}"
               f"  kp={a.kp or '默认'}  style={a.style}", flush=True)
         r = run(m, a.action, a.vx, a.dur, slope, a.push, a.kp, a.style, over,
-                vy=a.vy,
+                vy=a.vy, yaw=a.yaw,
                 realism=not a.ideal, wrench=a.wrench, burst=a.burst)
         show(r)
         got.append(r)
