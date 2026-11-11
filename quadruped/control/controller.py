@@ -82,6 +82,7 @@ abduction 不是「绕 x 转一下再往下走」，它把后面整条腿的俯�
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import sys
@@ -137,6 +138,20 @@ SPORT_Z_BIAS = 0.032
 MODEL_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),   # quadruped/
     "sim", "unitree_mujoco", "unitree_robots", "go2", "go2.xml")
+
+# 强化学习搜出来的步态参数（路线 A）。参数不写进源码：每次搜索的结果都不同，
+# 抄进代码等于每轮都要改代码，也留不下 A/B。文件由
+# `python -m quadruped.rl.search --promote` 产出。
+#
+# 路径只在这里拼一次 —— `make_gait` 与 `GAIT_STYLES` 都走它，两处各写一份
+# 就会在改目录时只改对一半。
+_SEARCH_GAIT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "rl", "out", "gait_best.json")
+
+
+def search_gait_path() -> str:
+    return os.environ.get("GO2_GAIT_JSON") or _SEARCH_GAIT
 
 
 # ===========================================================================
@@ -509,8 +524,41 @@ def make_gait(style: str, height: float = NOMINAL_HEIGHT,
                           # 有时还被摆动的脚反过来拽着走 —— 就是「莫名其妙往后跑」。
                           stance_sink=0.010,
                           speed_range=None)
+    if style == "search":
+        # 强化学习搜出来的步态（路线 A 的产物）。参数不写进源码，从 JSON 读：
+        # 每次搜索的结果都不同，复制进来等于每轮都要改代码，也没法保留 A/B。
+        #
+        # 文件由 `python -m quadruped.rl.search --promote` 产出，默认
+        # `quadruped/rl/out/gait_best.json`；`GO2_GAIT_JSON` 指到别处可做对照。
+        path = search_gait_path()
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+        except OSError as e:
+            raise FileNotFoundError(
+                f"search 档需要参数文件：{path}"
+                f"（先跑 python -m quadruped.rl.search --promote）") from e
+        spec = d.get("spec", d)          # 兼容裸 spec 与完整结果两种格式
+        spread = float(spec.get("stance_spread", 0.0))
+        # 速度包线由搜索结果自带：`stride_max` 只够撑到训过的速度，超过就削顶，
+        # 落地速度对不上（0.5 m/s 时 67 mm/s）。没有包线，`_check_gait` 会拿
+        # 一个这套参数根本没打算跑的速度去判它不合格。
+        sp = d.get("requires", {}).get("speed_range")
+        if sp:
+            sp = (float(sp[0]), float(sp[1]))
+        return _gp(period=float(spec["period"]),
+                   duty=float(spec["duty"]),
+                   swing_height=float(spec["swing_height"]),
+                   stride_max=float(spec["stride_max"]),
+                   stance_spread=spread,
+                   stride_gain=float(spec.get("stride_gain", 1.0)),
+                   speed_loop=float(spec.get("speed_loop", 0.0)),
+                   stance_sink=float(spec.get("stance_sink", 0.0)),
+                   speed_range=sp,
+                   neutral=_neutral_feet(height, spread),
+                   name="search")
     raise ValueError(
-        f"没有这种运动步态：{style}，只有 ('mech', 'bio')"
+        f"没有这种运动步态：{style}，只有 ('mech', 'bio', 'search')"
         f"（旧名 trot→mech、bound→bio 仍可用；gallop 是对照用的第三套）")
 
 
@@ -1421,7 +1469,8 @@ class Go2Controller:
         # 中立位必须跟着机身高度走，否则改 height 后站姿和轨迹会用两套基准
         self.gait.neutral = _neutral_feet(height + self.gait.stand_raise,
                                           self.gait.stance_spread)
-        self.gait_style = (self.gait.name if self.gait.name in self.GAIT_STYLES
+        # `search` 也认：参数从 JSON 来，档位名同样是 "search"
+        self.gait_style = (self.gait.name if self.gait.name in self.available_styles()
                            else "mech")
 
         self.kp = np.full(NUM_MOTOR, float(kp))
@@ -2759,16 +2808,27 @@ class Go2Controller:
     GAIT_STYLE_NAMES = {
         "mech": "机械（标准小跑，同官方灵动）",
         "bio": "仿生（并腿跑）",
+        "search": "搜索（RL 搜出来的参数）",
     }
 
-    # 换运动步态（`mech` 机械 / `bio` 仿生），返回换完之后的那个。
+    # 当前真正能切的档位。`search` 依赖一个 JSON 文件，文件不在就不进列表 ——
+    # 否则键盘 Tab 切到它就抛 FileNotFoundError，整条遥控链路断掉。
+    @classmethod
+    def available_styles(cls) -> tuple[str, ...]:
+        styles = list(cls.GAIT_STYLES)
+        if os.path.exists(search_gait_path()):
+            styles.append("search")
+        return tuple(styles)
+
+    # 换运动步态（`mech` 机械 / `bio` 仿生 / `search` 搜索），返回换完之后的那个。
     #
     # 跑着也能换：`foot_target()` 每帧都读 `self.gait`，下一帧就按新相位走。
     # 相位会跳一下（两条腿的相位对上/对不上变了），换的时候会顿一顿，正常。
     def set_gait_style(self, style: str) -> str:
         style = _GAIT_ALIASES.get(style, style)
-        if style not in self.GAIT_STYLES:
-            raise ValueError(f"没有这种运动步态：{style}，只有 {self.GAIT_STYLES}")
+        styles = self.available_styles()
+        if style not in styles:
+            raise ValueError(f"没有这种运动步态：{style}，只有 {styles}")
         # 力路跟着走。**不能靠默认值**：不传 mode 会落到 `make_gait` 的环境变量
         # 兜底（`GO2_MOTION`，通常是 mpc），切一次档就把当前力路静默换掉，而
         # MPC 线程还在跑、白烧 CPU，力矩却是另一条路算的，从任何指标上都看不出
@@ -2781,8 +2841,9 @@ class Go2Controller:
         return style
 
     def toggle_gait_style(self) -> str:
-        i = self.GAIT_STYLES.index(self.gait_style)
-        return self.set_gait_style(self.GAIT_STYLES[(i + 1) % len(self.GAIT_STYLES)])
+        styles = self.available_styles()
+        i = styles.index(self.gait_style) if self.gait_style in styles else -1
+        return self.set_gait_style(styles[(i + 1) % len(styles)])
 
     @property
     def gait_style_label(self) -> str:
@@ -3122,7 +3183,14 @@ class Go2Controller:
                 for k, lg in enumerate(CTRL_LEGS):
                     pk = self.fk_leg(lg, self.q[3 * k:3 * k + 3])
                     offs.append(float(pk[2]) - (FOOT_RADIUS - self.height))
-                self._z_off = float(np.mean(offs))
+                # **只在四脚基本齐平时采。** 上面那段注释说「那时四脚都在站姿」，
+                # 但这行代码跑在第一次步态发布里，腿已经在摆 —— 摆动腿的 fk 高度
+                # 比支撑腿高好几厘米，四条腿求平均得到的偏置取决于采样那一帧的
+                # 相位。每次启动偏 1~3 cm，偏正脚就悬空、偏负就压地打滑。
+                # 实测同一组参数两次启动分别给出 0% 和 23% 达成，就是这个。
+                # 采不到就留 None，下一帧继续试；站姿那段长得多，一定采得到。
+                if max(offs) - min(offs) < 0.01:
+                    self._z_off = float(np.mean(offs))
             if self._z_off:
                 p_traj = (p_traj[0], p_traj[1], p_traj[2] + self._z_off)
             p = tuple(n + a * (t2 - n) for n, t2 in zip(g["p_nom"][leg], p_traj))
@@ -3480,7 +3548,12 @@ class Go2Controller:
         print(f"  v=0：x 漂移 {drift:.3f} μm（应为 0），"
               f"抬脚 {lift:.1f} mm（应 = {gp.swing_height * 1000:.0f}）")
 
-        for vx in (0.0, 0.1, 0.2, 0.3, 0.4, 0.5):
+        # 扫到档位声明的速度上限为止。没声明包线的（mech/bio）按 0.5 全扫。
+        speeds = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5)
+        if gp.speed_range:
+            hi = gp.speed_range[1]
+            speeds = tuple(v for v in speeds if v <= hi + 1e-9)
+        for vx in speeds:
             row = self._scan_gait(vx, rate)
             ok_all &= row["td_err"] < 1e-4 and row["ik_fail"] == 0
             print(f"  vx={vx:.1f}  落地速度误差 {row['td_err'] * 1e3:6.3f} mm/s  "

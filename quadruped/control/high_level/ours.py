@@ -271,6 +271,9 @@ class HighLevelController:
     # 起跳时脚相对机身往后滑的最大距离。腿的水平工作空间就这么多，
     # 再多髋关节会顶到限位、落地时前腿撑不住。
     JUMP_TRAVEL = 0.10
+    # 走着跳时足端横向偏移的上限。三自由度腿在压低的机身高（0.185 m）上，
+    # 横向 5 cm 已经接近髋关节侧摆限位；超过就 IK 抛异常。
+    JUMP_LAT_MAX = 0.05
     # 走着跳：脚在支撑段该以多快的速度往后退。1.5 倍实测机身速度 ——
     # 等于 1.0 的话脚只是跟着地面走，一点推力都不给；实测要 1.5 机身才真的
     # 被推着往前跑（和步态里的 stride_gain 一个道理，都是补打滑）。
@@ -355,7 +358,8 @@ class HighLevelController:
             raise ValueError(f"没有这种跳跃风格：{style}，只有 {self.JUMP_STYLES}")
         self.jump_style = style
         # 运动步态跟着走。两边同名同义，切风格就是切整套。
-        if style in self.controller.GAIT_STYLES:
+        # 用 available_styles()：`search` 依赖一个 JSON 文件，文件不在就不该切。
+        if style in self.controller.available_styles():
             self.controller.set_gait_style(style)
         return style
 
@@ -585,10 +589,22 @@ class HighLevelController:
                     break
             if not moving:
                 return (0.0, 0.0)
-            if abs(vx) < 0.02:                          # 纯横移
-                return (0.0, max(-self.JUMP_TRAVEL,
-                                 min(self.JUMP_TRAVEL, sx * math.copysign(1.0, vy))))
-            return (sx, sx * vy / vx)
+            # 横向分量按 vy/vx 缩放前足的横向偏移。**vx 接近 0 时这个比值会爆**：
+            # 原地转向（指令 vx 0.09、vy −0.13）实测比值 −1.4，乘上后退量把
+            # FR 足端推到 y=+0.35，abd 1.38 rad 超出限位 1.047，IK 直接抛异常，
+            # 整个进程退出。所以两条都要有上限：
+            #   - 比值分母不小于 0.08 m/s，避免小 vx 放大；
+            #   - 横向偏移本身封在 JUMP_LAT_MAX 内 —— 三自由度腿在压低的机身
+            #     高度上，横向偏移超过 5 cm 就够不到。
+            if abs(vx) < 0.08:
+                lat = math.copysign(
+                    min(self.JUMP_LAT_MAX, abs(vy) * abs(sx) / 0.08),
+                    vy if vy else 1.0)
+            else:
+                lat = sx * vy / vx
+            lat = max(-self.JUMP_LAT_MAX,
+                      min(self.JUMP_LAT_MAX, lat))
+            return (sx, lat)
 
         # 一组足端目标。
         #
@@ -615,13 +631,20 @@ class HighLevelController:
                 feet[leg] = (x, y, z)
             return c.joint_from_feet(feet)
 
-        if style == "mech":
-            push = min(push, self.JUMP_MECH_PUSH)      # 蹬太高空中仰头压不住
-            steps = self._jump_mech_steps(jf, crouch, push, sweep_at, prep_h)
-        else:
-            steps = self._jump_bio_steps(jf, crouch, push, sweep_at, prep_h,
-                                         reach_scale=1.0 if not moving
-                                         else self.JUMP_REACH_FADE)
+        try:
+            if style == "mech":
+                push = min(push, self.JUMP_MECH_PUSH)      # 蹬太高空中仰头压不住
+                steps = self._jump_mech_steps(jf, crouch, push, sweep_at, prep_h)
+            else:
+                steps = self._jump_bio_steps(jf, crouch, push, sweep_at, prep_h,
+                                             reach_scale=1.0 if not moving
+                                             else self.JUMP_REACH_FADE)
+        except RuntimeError as e:
+            # IK 越界不能把整个控制进程带下去。跳跃是按键触发的单次动作，
+            # 序列在这里算不出来就一步都没发出去 —— 站在原地，比进程退出后
+            # 腿直接失力安全得多。
+            print(f"跳跃序列算不出来，已放弃（腿没动）：{e}", flush=True)
+            return 4206
         c.pose_sequence(steps, label=f"跳跃·{style}", z0=z0)
         tail = (f"带速度 {vx:+.2f}/{vy:+.2f} m/s（a={ax:+.2f}），"
                 f"地面后退量 {s_lift * 100:.0f} cm" if moving else "原地")

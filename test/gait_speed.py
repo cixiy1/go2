@@ -35,7 +35,7 @@ def main() -> int:
     ap.add_argument("--vy", type=float, default=0.0)
     ap.add_argument("--yaw", type=float, default=0.0)
     ap.add_argument("--dur", type=float, default=8.0, help="步态持续秒数")
-    ap.add_argument("--style", default="mech", choices=("mech", "bio"))
+    ap.add_argument("--style", default="mech", choices=("mech", "bio", "search"))
     ap.add_argument("--wrench", type=float, default=None,
                     help="覆盖机身层权重：0 = 老路子（纯位置伺服 + 重力前馈），1 = VMC")
     ap.add_argument("--stride-max", type=float, default=None)
