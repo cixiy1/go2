@@ -77,10 +77,6 @@ class _Delegate:
     def loco_gait(self):
         return self.client.gait_style_label
 
-    # 换运动步态，返回切完之后的标签（`None` = 这个后端没有第二档）。
-    #
-    # 自研是换一套相位参数，官方是发 FreeWalk / FreeBound 换运动模式，
-    # 两边都按 mech / bio 这两个键走，调用方不用知道底下是哪种。
     def toggle_loco_gait(self):
         return self.client.toggle_gait_style()
 
@@ -88,7 +84,6 @@ class _Delegate:
     def jump_gait(self):
         return self.client.jump_style_label
 
-    # 换跳跃风格，同样返回标签；官方只有一种前跳，回 None。
     def toggle_jump_gait(self):
         return self.client.toggle_jump_style()
 

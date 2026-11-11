@@ -359,11 +359,10 @@ class HighLevelController:
             self.controller.set_gait_style(style)
         return style
 
-    # 在当前风格和下一个之间来回切，返回切完之后的标签（调用方拿去显示）。
+    # 在当前风格和下一个之间来回切。
     def toggle_jump_style(self) -> str:
         i = self.JUMP_STYLES.index(self.jump_style)
-        self.set_jump_style(self.JUMP_STYLES[(i + 1) % len(self.JUMP_STYLES)])
-        return self.jump_style_label
+        return self.set_jump_style(self.JUMP_STYLES[(i + 1) % len(self.JUMP_STYLES)])
 
     @property
     def jump_style_label(self) -> str:
@@ -380,10 +379,6 @@ class HighLevelController:
         return self.controller.gait_style_label
 
     # 换风格（`mech` 机械 / `bio` 仿生），跳跃动作一并跟着换。
-    #
-    # `bio` 跑的是四腿错相的横向序列疾驰，官方那份对应 `bio` 的档是并腿跑
-    # （FreeBound）；`mech` 是标准小跑，对应官方的灵动（FreeWalk）。两边对齐
-    # 的是角色不是步法 —— 都代表「稳」和「快」两档，键盘的 Tab 换后端不用改。
     def set_gait_style(self, style: str) -> str:
         style = self.controller.set_gait_style(style)
         if style in self.JUMP_STYLES:
@@ -391,14 +386,12 @@ class HighLevelController:
         print(f"运动步态 → {self.controller.gait_style_label}", flush=True)
         return style
 
-    # 在 mech / bio 之间来回切，返回切完之后的标签。
-    #
-    # 不在这里 print：键盘的状态行是原地重绘的，打印得由它自己加换行再做。
     def toggle_gait_style(self) -> str:
         style = self.controller.toggle_gait_style()
         if style in self.JUMP_STYLES:
             self.jump_style = style
-        return self.gait_style_label
+        print(f"运动步态 → {self.controller.gait_style_label}", flush=True)
+        return style
 
     # 仿生：后腿蹬得多、前腿伸前等落地。
     #
