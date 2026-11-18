@@ -21,9 +21,40 @@ git -C quadruped/sim/unitree_mujoco apply ../../../patches/unitree_mujoco.local.
 uv sync --group sim
 ```
 
+## 校验
+
+补丁打完必须先核对模型指纹。`go2.xml` 是训练、`_check_gait`、真机力矩前馈共用的唯一模型来源，
+它变了的话之前的 `GaitParams` 全部作废：
+
+```bash
+shasum -a 256 quadruped/sim/unitree_mujoco/unitree_robots/go2/go2.xml
+# 期望 86a5745d7ac32762ae2aeb1c553b1bd593785781d48f58adf2f6b897acea2fa3
+```
+
 ## 补丁里有什么
 
-- **unitree_mujoco**：`config.py` 改回环口为 `lo0`、关手柄；`unitree_sdk2py_bridge.py` 加真机特性（指令延迟 5 ms、编码器噪声、力控带宽 150 Hz）；`go2.xml` 按真机填关节阻尼/转子惯量/静摩擦 0.3，足底摩擦 0.4→0.9 并收紧接触刚度。
-- **unitree_sdk2_python**：`example/go2/high_level/go2_sport_client.py` 与 `utils/thread.py` 的小修。
+**unitree_mujoco**（四个文件）
 
-补丁是用 `git diff --binary` 生成的，含二进制文件（`go2w/assets/terrain.STL`）。
+- `simulate_python/config.py`：回环口改 `lo0`、关手柄。
+- `simulate_python/headless.py`：新增无窗口仿真入口。`launch_passive` 只负责画图，物理与 DDS
+  都在 `UnitreeSdk2Bridge` 里，去掉 viewer 就能在无显示器的会话里跑控制器。
+- `simulate_python/unitree_sdk2py_bridge.py`：加真机特性（指令延迟 5 ms、编码器噪声、力控带宽）。
+- `unitree_robots/go2/go2.xml`：关节阻尼 0.1→0.3、转子惯量 0.01→0.015、静摩擦 0.3；
+  足底摩擦 0.4→0.9，缩短接触时间常数。
+
+**unitree_sdk2_python**：`example/go2/high_level/go2_sport_client.py` 与 `utils/thread.py` 的小修。
+
+## 维护
+
+改完这两个目录里的文件，立刻重新生成补丁。否则换机器重建出来的环境与调参时用的不是同一份模型，
+而症状是「同样的参数、不同的表现」，很难往回追。
+
+```bash
+cd quadruped/sim/unitree_mujoco
+git add -N .                      # 让新增文件（如 headless.py）进 diff
+git diff > ../../../patches/unitree_mujoco.local.patch
+ruff check simulate_python        # 顺手看一眼，别把调试残留带进补丁
+```
+
+`gait_best.json` 的 `requires` 目前只记 `kp / kd / motor_bw / speed_range`，没有模型 hash。
+换模型之后旧的搜索结果不会被自动判废，靠上面那条 `shasum` 人工核。

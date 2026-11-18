@@ -124,8 +124,30 @@ LIMITS_REAR_THIGH = (-0.5236, 4.5379)  # 后腿前限更宽松
 # 站立姿态，与 go2.xml 的 <key name="home"> 一致
 STAND_Q = (0.0, 0.9, -1.8)
 
-# 标称机身高度（足底贴地）。MuJoCo 静止实测 0.276，取 0.27。
-NOMINAL_HEIGHT = 0.27
+# 标称机身高度（足底贴地）。
+#
+# 原来取 0.27，依据是「MuJoCo 静止实测 0.276」—— 但那只是**仿真里指令 0.27
+# 时的实测**，不是「该站多高」。真机上看起来明显矮一截。
+#
+# 2026-11-17 真机量过一轮（`test/real_diag.py --height X --stage stand`，
+# 指令与实测差 4.6~5.2 mm）：
+#
+#     指令 0.32 → 315 mm     指令 0.34 → 335 mm     指令 0.36 → 356 mm
+#
+# 0.34 起行走开始不稳：同样 `--vx 0.15` 跑两次，一次飞到 0.268 m/s、一次
+# 原地不动（-0.014），而 0.32 / 0.30 这种高度上两次复现几乎一致。
+#
+# 0.32 站到 315 用户仍觉得偏高，`test/real_diag.py` 的 help 写官方站姿是
+# 0.28~0.30 —— 那个区间比 `official.py` 注释里 `StandUp` 的 0.33 低一档，
+# 两者量的可能不是同一点（机腹 vs 机身顶）。现场以 0.30 为准。
+#
+# 腿全长 0.213 + 0.213 = 0.426（`model.py:39-40`）。0.30 时髋到足底 0.278，
+# 弯曲余量 0.148 m，比 0.32 多 2 cm，MPC 的收紧空间更足。
+#
+# 这个数同时是 `make_gait` 的 neutral 高度和 `stand_joint_target` 的站姿，
+# 改它会整体抬高重心：步态参数（`rl/out/gait_best.json`）是在旧高度下搜的，
+# 动这个值之后要重看一遍行走稳定性。
+NOMINAL_HEIGHT = 0.30
 
 # 蹲到底、还能保持四脚着地的最低机身高度。再低小腿会顶到机身。
 MIN_HEIGHT = 0.15
@@ -841,6 +863,11 @@ class Go2Controller:
     # 0 不是「限幅」而是「静默丢弃」—— 指令被夹成 0，操作者按左右平移毫无
     # 反应，界面上却还显示着 vy。任何把它调回 0 的改动都要同时告诉操作者。
     MAX_VY = 0.40
+    # 角速度上限，rad/s。这一层吃的是**真实**角速度，不是策略那套「命令值」：
+    # 策略在 vyaw=4.0 时实测原地 0.74 rad/s，而 MPC + WBC 收到 4.0 会真的按 4 rad/s
+    # 甩出去。`limits.VYAW_MAX` 现在跟着策略训练范围是 4.0（它服务策略与协议），
+    # 运控的边界只能自己守 —— 和 `MAX_VY` 同一类事。
+    MAX_YAW = 1.0
     # 单腿竖直力上限。单腿支撑时理论上要扛 mg = 147 N，落地冲击会更高，
     # 220 给 1.5 倍余量。再高就没意义了 —— 电机额定才 23.7 N·m。
     WRENCH_FZ_MAX = 220.0
@@ -1441,7 +1468,7 @@ class Go2Controller:
                  height: float = NOMINAL_HEIGHT, kp: float | None = None,
                  kd: float | None = None, kp_calf: float | None = None,
                  gait: GaitParams | None = None, real: bool = False,
-                 tau_ff: float | None = None):
+                 tau_ff: float | None = None, mode: str | None = None):
         self.domain = domain
         self.iface = iface
         # 真机：刚度按实物经验值给（官方调试框架的站立段就是 kp/kd 乘一个
@@ -1465,7 +1492,16 @@ class Go2Controller:
             kd = self.KD_REAL if real else self.KD_SIM
         self.height = height
         # 默认机械档：就是高层运动原来那套标准小跑，最稳，开机先别跑花活。
-        self.gait = gait or make_gait("mech", height, real)
+        #
+        # `mode` 显式传参 > `GO2_MOTION` > 默认 mpc，规则见 `make_gait`。
+        # 传 "vmc" 就把 MPC 与 WBC 整层关掉（两条力路只在 mpc 下存在）：
+        # 站姿走 `_publish(q, tau=_tau_ff(q))`，外力只由 200 Hz 的
+        # `_wrench_cmd` 直接给 —— 没有 50 Hz 的预测，也没有 QP 力分配。
+        self.motion = mode or (os.environ.get("GO2_MOTION") or "mpc")
+        # 运控一旦被创建就报一声。只跑策略时这一行不会出现 —— 策略端不建这个对象，
+        # `GO2_MOTION` 也到不了它手里。用它判断「菜单里的 mpc 到底有没有接上」。
+        print(f"[运控] Go2Controller 已创建，力路 {self.motion}", flush=True)
+        self.gait = gait or make_gait("mech", height, real, self.motion)
         # 中立位必须跟着机身高度走，否则改 height 后站姿和轨迹会用两套基准
         self.gait.neutral = _neutral_feet(height + self.gait.stand_raise,
                                           self.gait.stance_spread)
@@ -2637,6 +2673,42 @@ class Go2Controller:
             self._pub.Write(self._cmd)
             time.sleep(0.01)
 
+    # 关节直通：位置 PD，不经过步态与 MPC。给外部策略（例如 `quadruped.policy`）用。
+    #
+    # 会把 `_mode` 置 idle。200 Hz 回路只在 hold / pose / gait 三种模式下发布，idle
+    # 时它一帧都不写 —— 少这一步，两路指令会以 200 Hz 和 50 Hz 交替写同一个
+    # motor_cmd，电机收到的目标角在抖，看起来像「参数调不好」。
+    #
+    # kp/kd 接受标量或 12 维数组：策略那边是一组全局增益，手臂动作那边可能要逐关节。
+    def joint_target(self, q12, kp=None, kd=None, tau=None) -> None:
+        self._mode = "idle"
+        kp = self.kp if kp is None else np.broadcast_to(np.asarray(kp, float), NUM_MOTOR)
+        kd = self.kd if kd is None else np.broadcast_to(np.asarray(kd, float), NUM_MOTOR)
+        tau = None if tau is None else np.broadcast_to(np.asarray(tau, float), NUM_MOTOR)
+        self._publish(q12, kp=kp, kd=kd, tau=tau)
+
+    # 力矩直通：不指定位置目标，12 个力矩全走 `tau`，kp / kd 置 0。
+    #
+    # 与 `joint_target` 只差这三项。**驱动器的 PD 回路仍然在跑**，只是增益为 0 ——
+    # `LowCmd` 的语义固定是 `tau + kp·(q_cmd − q) + kd·(dq_cmd − dq)`，我们改不了
+    # 这个式子，只能让它后两项贡献为零。所以「绕开 PD」的准确说法是「让 PD 失效」。
+    #
+    # `motor_cmd.q` 填实测角而不是 0：驱动器会拿它算 `q_cmd − q`，填实测角这一项
+    # 恒为 0，万一有哪一层没把 kp 清零，误差也不会是一个满量程的阶跃。
+    #
+    # 同样把 `_mode` 置 idle，理由见 `joint_target`。
+    def joint_torque(self, tau12) -> None:
+        self._mode = "idle"
+        q = self.q
+        if q is None:
+            raise RuntimeError("还没收到 rt/lowstate，不知道电机当前角")
+        tau = np.broadcast_to(np.asarray(tau12, dtype=float), NUM_MOTOR)
+        # 一帧 NaN 就是满力矩乱打，宁可这一帧不发。
+        if not np.all(np.isfinite(tau)):
+            raise ValueError("力矩里有 NaN / Inf")
+        zero = np.zeros(NUM_MOTOR)
+        self._publish(q, kp=zero, kd=zero, tau=tau)
+
     # 停回路并阻尼。可重复调用；之后还能再调动作，回路会自己重启。
     #
     # park=True 时先让子对象（高层）执行 StandDown 蹲到底，再从低处松腿。
@@ -3365,7 +3437,8 @@ class Go2Controller:
                      yaw: float = 0.0) -> None:
         if not (self._gait and self._gait.get("stream")):
             raise RuntimeError("先 start_velocity()")
-        self._vel_target = [float(vx), float(vy), float(yaw)]
+        self._vel_target = [float(vx), float(vy),
+                            _clamp(float(yaw), -self.MAX_YAW, self.MAX_YAW)]
 
     # 目标速度归零。收步是渐进的，本调用立即返回。
     def stop_velocity(self) -> None:
@@ -3489,7 +3562,7 @@ class Go2Controller:
 
     def _check_ik(self, m, d, feet, pose) -> float:
         print("\n=== 2. IK 实际精度（MuJoCo 裁判）===")
-        stand = self.stand_feet(0.27, self.gait.stance_spread)
+        stand = self.stand_feet(NOMINAL_HEIGHT, self.gait.stance_spread)
         worst, n_ok, n_fail = 0.0, 0, 0
         for dx in (-0.10, -0.05, 0.0, 0.05, 0.10):
             for dy in (-0.05, 0.0, 0.05):

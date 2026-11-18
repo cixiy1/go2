@@ -33,7 +33,7 @@ HighLevelController）对上面这套接口一致，按键循环与收工各只�
     uv run python -m quadruped.control.physical.keyboard --max-speed 0.25
     uv run python -m quadruped.control.physical.keyboard --duration 15  # 最多跑 15 秒
     uv run python -m quadruped.control.physical.keyboard --keys terminal  # 强制终端按键
-    uv run python -m quadruped.control.physical.keyboard --keys-anywhere  # 全局监听
+    uv run python -m quadruped.control.physical.keyboard --keys-anywhere  # 不限前台
     uv run python -m quadruped.control.physical.keyboard --line-mode   # 指令模式
     uv run python -m quadruped.control.physical.keyboard --dry-run     # 不连狗
 
@@ -116,9 +116,19 @@ DIRS = {
 
 HOLD = 0.55          # 按键意图保持时间，秒。要大于 macOS 键盘首次重复延迟（约 0.5s）
 ACCEL_LIN = 1.0      # 线加速度上限 m/s^2
-ACCEL_ANG = 2.5      # 角加速度上限 rad/s^2
+ACCEL_ANG = 2.5      # 角加速度下限 rad/s^2。实际上限按 max_ang 的两倍取，见 Controller
 RATE = 20.0          # 控制频率 Hz
 EPS = 1e-3
+
+# 转向上限的两种默认值（rad/s）。推理模型（策略网络）对 vyaw 的响应是非线性的：
+# 命令 1.0 原地只有 0.13 rad/s，4.0 才有 0.74（`test/turn_sweep.py`）—— 卡在
+# 1.0 的表现就是「按 q/e 几乎不转」，转 90° 要 12 秒。原生运控（官方 / 自研）
+# 按 rad/s 直接执行，1.0 就是真 1.0，给到 4.0 是原地陀螺。
+#
+# 真机先给 2.0：4.0 是仿真里外推的最边缘，足端打滑和电机发热都没量过。
+YAW_POLICY = 4.0
+YAW_POLICY_REAL = 2.0
+YAW_NATIVE = 1.0
 
 # 方向键的转义序列第三字节 -> 等价按键
 ARROWS = {"A": "w", "B": "s", "C": "e", "D": "q"}
@@ -128,12 +138,17 @@ HELP = """
   w / s   前进 / 后退        a / d   左移 / 右移（横移）
   q / e   左转 / 右转        ↑↓←→   同 w s q e
   空格    跳跃               Ctrl    蹲下 / 起立
-  Shift   切换风格（机械 / 仿生）  Tab   同上，跳和跑一起换
+  Shift   切换风格（机械 / 仿生）  Tab   切步态（策略端：trot→bound→pace→pronk）
   Enter   停止并站定         b       站立平衡
   1..9    最大速度 0.1~0.9 m/s
   h       开关本帮助         ESC     退出
 
 方向按住就走、松开就停。空格 / Ctrl / Enter 是单次动作，不连发。
+侧向（a/d）默认 0.6 m/s、前进 0.4 m/s：策略对侧向命令是非线性的，命令 0.3 只出
+0.12 m/s，0.6 才出 0.30。后退是这份权重的弱项，命令 −0.4 实测只有 −0.05。
+转向（q/e）在推理模型下满档发 4.0（仿真）/ 2.0（真机），实测原地约 0.74 rad/s，
+90° 约 2 秒，步态是 trot；官方 / 自研控制端发 1.0，它们按 rad/s 直接执行。
+--max-yaw 可以覆盖这个默认。
 动作不会挡住后面的按键：跳到一半也能按方向，落地那一下接着走。
 """
 
@@ -142,7 +157,7 @@ LINE_HELP = """
     w 1.5     前进 1.5 秒          d 0.8     右移 0.8 秒
     q 1       左转 1 秒            w         省略秒数按 1 秒
     jump      跳跃                 crouch    蹲下 / 起立
-    gait      切换风格（机械 / 仿生）  jgait   同上（跳和跑一起换）
+    gait      切步态（策略端 trot/bound/pace/pronk 轮换）  jgait  同上
     stop      停车并站定           speed 0.3 设最大线速度
     quit      退出
 """
@@ -226,7 +241,9 @@ class TerminalKeys:
                 self._q.append(("help", None))
             i += 1
 
-    def events(self):
+    # `ignore_front` 只为和 `GlobalKeys` 对齐：字符流没有前台概念，收什么算什么。
+    def events(self, ignore_front: bool = False):
+        del ignore_front
         out, self._q = self._q, []
         return out
 
@@ -287,6 +304,11 @@ class GlobalKeys:
         "com.jetbrains.goland", "com.jetbrains.clion",
         "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders",
     }
+
+    # 仿真窗口也放行。这个项目的用法就是「一边看 MuJoCo 窗口一边按键」，而启动器
+    # 先拉仿真器、后起控制器，焦点留在 mjpython 上 —— 不放行的话连「按 Enter 开始」
+    # 都收不到，表现是卡在「还没开始」。
+    SIM_NAMES = ("mjpython", "mujoco")
 
     # bundle id 拿不到时退回显示名，只收特征明确的词（"code" 会误伤 Xcode，不放）
     TERMINAL_NAMES = (
@@ -420,6 +442,8 @@ class GlobalKeys:
         if bundle and bundle in cls.TERMINAL_BUNDLES:
             return True
         low = (name or "").lower()
+        if any(h in low for h in cls.SIM_NAMES):
+            return True
         return any(h in low for h in cls.TERMINAL_NAMES)
 
     @property
@@ -427,8 +451,10 @@ class GlobalKeys:
         self.front_ok()
         return self._front_name
 
-    def events(self):
-        allow_all = self.front_ok()     # 焦点在别处：动作丢掉，但退出放行
+    # 取出这一帧攒下的按键。`ignore_front=True` 不做前台过滤 —— 用在「按 Enter
+    # 开始」那一步：狗还没起来，收错键没有后果；卡在这儿才是真没救。
+    def events(self, ignore_front: bool = False):
+        allow_all = ignore_front or self.front_ok()   # 焦点在别处：动作丢掉，退出放行
         out = []
         while True:
             try:
@@ -437,12 +463,6 @@ class GlobalKeys:
                 return out
             if allow_all or e[0] == "quit":
                 out.append(e)
-        out = []
-        while True:
-            try:
-                out.append(self._q.get_nowait())
-            except queue.Empty:
-                return out
 
     def pressed(self, name: str) -> bool:
         if not self.front_ok():
@@ -485,9 +505,25 @@ def approach(cur: float, target: float, step: float) -> float:
 
 
 class Controller:
-    def __init__(self, max_lin: float, max_ang: float):
-        self.max_lin = max_lin
-        self.max_ang = max_ang
+    # vy_max 单独给：策略对侧向命令的响应是非线性的 —— 命令 0.3 只出 0.12 m/s，
+    # 0.6 出 0.30 m/s。按 max_lin 走侧向等于白给一半行程。
+    #
+    # turn_boost：只按转向时叠的前向速度，默认 0。旧版给 0.2 是因为策略原地转
+    # 只有 0.03 rad/s（那时 vyaw 被夹在 1.0）；`walker.COMMAND_RANGE` 放开到 ±4.0
+    # 后 trot 原地能到 0.74 rad/s，叠前向只会让原地转变成半径 0.27 m 的画圈。
+    def __init__(self, max_lin: float, max_ang: float, vy_max: float | None = None,
+                 turn_boost: float = 0.0):
+        # vy_max 给 None 表示跟随速度档（×1.5，上限 0.6）。固定值只在明确要
+        # 「侧向永远这么快」时给 —— 否则按 1 档时前进 0.1、横移 0.6，按 a 比按 w
+        # 快六倍，手感是坏的。
+        self._vy_fixed = vy_max is not None
+        self.turn_boost = float(turn_boost)
+        self.vy_max = 0.0
+        self.set_speed(max_lin)      # max_lin 在 set_speed 里赋值
+        self.max_ang = float(max_ang)
+        # 角加速度跟着上限走：4.0 时 8.0（0.5 s 起满），1.0 时仍是旧的 2.5。
+        # 定死一个值会让高上限起步发木、低上限起步抽头。
+        self.accel_ang = max(ACCEL_ANG, 2.0 * abs(self.max_ang))
         self.deadline = dict.fromkeys(DIRS, 0.0)
         self.vx = self.vy = self.vyaw = 0.0
 
@@ -516,16 +552,26 @@ class Controller:
         if n > 1.0:
             tx, ty = tx / n, ty / n
         tx *= self.max_lin
-        ty *= self.max_lin
+        ty *= self.vy_max
         tz = max(-1.0, min(1.0, tz)) * self.max_ang
+        # 只转不走时叠一点前向。同时按了 w 就不动它，免得把直行速度改掉。
+        # 助推不超过当前前进上限：1 档（0.1 m/s）时按 q 不该冲到 0.2。
+        if tz != 0.0 and tx == 0.0:
+            tx = min(self.turn_boost, self.max_lin)
         return tx, ty, tz
 
     def step(self, now: float, dt: float, active=None):
         tx, ty, tz = self.target(now, active)
         self.vx = approach(self.vx, tx, ACCEL_LIN * dt)
         self.vy = approach(self.vy, ty, ACCEL_LIN * dt)
-        self.vyaw = approach(self.vyaw, tz, ACCEL_ANG * dt)
+        self.vyaw = approach(self.vyaw, tz, self.accel_ang * dt)
         return self.vx, self.vy, self.vyaw
+
+    # 改最大前进速度。侧向按比例跟随，除非 `--strafe` 给了固定值。
+    def set_speed(self, max_lin: float) -> None:
+        self.max_lin = float(max_lin)
+        if not self._vy_fixed:
+            self.vy_max = min(0.6, self.max_lin * 1.5)
 
     def stop_now(self):
         self.deadline = dict.fromkeys(DIRS, 0.0)
@@ -605,9 +651,21 @@ def render(vx: float, vy: float, vyaw: float, max_lin: float, active: str,
 
 
 # 走一段：加速到位、保持 duration、再减速到 0。返回本段实际发过的峰值线速度。
-def run_segment(client, ctrl: "Controller", key: str, duration: float) -> float:
+#
+# `backend` 而不是 `client`：策略后端没有 client，速度要走 `backend.move()`。
+def run_segment(backend, ctrl: "Controller", key: str, duration: float) -> float:
+    client = backend.client if backend is not None else None
+
+    def send() -> None:
+        if client is not None:
+            client.Move(ctrl.vx, ctrl.vy, ctrl.vyaw)
+        elif backend is not None:
+            backend.move(ctrl.vx, ctrl.vy, ctrl.vyaw)
+
     dx, dy, dz = DIRS[key]
-    tx, ty, tz = dx * ctrl.max_lin, dy * ctrl.max_lin, dz * ctrl.max_ang
+    tx, ty, tz = dx * ctrl.max_lin, dy * ctrl.vy_max, dz * ctrl.max_ang
+    if dz and not dx and not dy:
+        tx = ctrl.turn_boost
     peak = 0.0
     t0 = last = time.monotonic()
     while True:
@@ -616,10 +674,9 @@ def run_segment(client, ctrl: "Controller", key: str, duration: float) -> float:
         last = now
         ctrl.vx = approach(ctrl.vx, tx, ACCEL_LIN * dt)
         ctrl.vy = approach(ctrl.vy, ty, ACCEL_LIN * dt)
-        ctrl.vyaw = approach(ctrl.vyaw, tz, ACCEL_ANG * dt)
+        ctrl.vyaw = approach(ctrl.vyaw, tz, ctrl.accel_ang * dt)
         peak = max(peak, abs(ctrl.vx), abs(ctrl.vy))
-        if client:
-            client.Move(ctrl.vx, ctrl.vy, ctrl.vyaw)
+        send()
         if now - t0 >= duration:
             break
         time.sleep(1.0 / RATE)
@@ -631,13 +688,26 @@ def run_segment(client, ctrl: "Controller", key: str, duration: float) -> float:
         last = now
         ctrl.vx = approach(ctrl.vx, 0.0, ACCEL_LIN * dt)
         ctrl.vy = approach(ctrl.vy, 0.0, ACCEL_LIN * dt)
-        ctrl.vyaw = approach(ctrl.vyaw, 0.0, ACCEL_ANG * dt)
-        if client:
-            client.Move(ctrl.vx, ctrl.vy, ctrl.vyaw)
+        ctrl.vyaw = approach(ctrl.vyaw, 0.0, ctrl.accel_ang * dt)
+        send()
         time.sleep(1.0 / RATE)
-    if client:
+    if client is not None:
         client.StopMove()
+    elif backend is not None:
+        backend.stop_motion()
     return peak
+
+
+# 后端能力不全时给出原因，别让一个不支持的按键把整个遥控循环带走。
+#
+# `PolicyBackend` 的 jump / crouch / toggle_jump_gait 会抛 NotImplementedError：
+# 策略只会走，换步态走的是 `toggle_loco_gait`。官方后端在仿真里没有原生运动服务，
+# 调用也可能抛 RuntimeError。三种都按「这个后端做不到」处理，打印后继续收按键。
+def attempt(fn, *args):
+    try:
+        return True, fn(*args)
+    except (NotImplementedError, ValueError, RuntimeError) as err:
+        return False, str(err)
 
 
 # 给只按行转发输入的终端（IDEA Run 控制台）用的指令模式。返回峰值线速度。
@@ -665,36 +735,47 @@ def line_control(backend, ctrl: "Controller") -> float:
             if client:
                 client.StopMove()
                 client.BalanceStand()
+            elif backend:
+                backend.stop_motion()
             print("  已停")
             continue
         if cmd == "jump":
             if backend:
-                print(f"  跳跃 -> {backend.jump()}")
+                ok, out = attempt(backend.jump)
+                print(f"  跳跃 -> {out}" if ok else f"  做不到：{out}")
             else:
                 print("  （dry-run，不连狗）")
             continue
         if cmd in ("gait", "jgait"):
             fn = (backend.toggle_jump_gait if cmd == "jgait"
                   else backend.toggle_loco_gait) if backend else None
-            label = fn() if fn else None
-            print(f"  风格 -> {label}" if label
-                  else "  （官方控制器的步态在机器上 / dry-run）")
+            if fn is None:
+                print("  （官方控制器的步态在机器上 / dry-run）")
+            else:
+                ok, out = attempt(fn)
+                print(f"  步态 -> {out}" if ok else f"  做不到：{out}")
             continue
         if cmd == "crouch":
-            crouched = not crouched
             if backend:
-                code = backend.crouch() if crouched else backend.uncrouch()
-                print(f"  {'蹲下' if crouched else '起立'} -> {code}")
+                # 只有确认支持才翻状态，否则下一次按 Ctrl 会以为已经蹲着。
+                target = not crouched
+                ok, out = attempt(backend.crouch if target else backend.uncrouch)
+                if ok:
+                    crouched = target
+                    print(f"  {'蹲下' if crouched else '起立'} -> {out}")
+                else:
+                    print(f"  做不到：{out}")
             else:
+                crouched = not crouched
                 print(f"  （dry-run）{'蹲下' if crouched else '起立'}")
             continue
         if cmd == "speed" and len(parts) > 1:
             try:
-                ctrl.max_lin = max(0.05, min(float(parts[1]), 1.0))
+                ctrl.set_speed(max(0.05, min(float(parts[1]), 1.0)))
             except ValueError:
                 print("  用法: speed 0.3")
                 continue
-            print(f"  最大线速度 {ctrl.max_lin:.2f} m/s")
+            print(f"  最大线速度 {ctrl.max_lin:.2f} m/s（侧向 {ctrl.vy_max:.2f}）")
             continue
         if cmd in DIRS:
             try:
@@ -704,8 +785,21 @@ def line_control(backend, ctrl: "Controller") -> float:
                 continue
             dur = max(0.1, min(dur, 5.0))
             print(f"  执行 {cmd} {dur:.1f}s …")
-            peak = max(peak, run_segment(client, ctrl, cmd, dur))
-            print("  完成")
+            p0 = backend.pos if backend is not None else None
+            r0 = backend.rpy[2] if backend is not None and backend.rpy else None
+            peak = max(peak, run_segment(backend, ctrl, cmd, dur))
+            # 指令模式没有实时面板，走完一段至少把位移报出来 —— 否则「完成」
+            # 只证明循环跑完，不能证明狗动了。
+            p1 = backend.pos if backend is not None else None
+            r1 = backend.rpy[2] if backend is not None and backend.rpy else None
+            if p0 is not None and p1 is not None:
+                turn = ""
+                if r0 is not None and r1 is not None:
+                    dyaw = (r1 - r0 + math.pi) % (2 * math.pi) - math.pi
+                    turn = f"  yaw {math.degrees(dyaw):+.1f}°"
+                print(f"  完成：位移 x {p1[0] - p0[0]:+.2f} m  y {p1[1] - p0[1]:+.2f} m{turn}")
+            else:
+                print("  完成")
             continue
         if cmd == "help":
             print(LINE_HELP)
@@ -720,7 +814,16 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="键盘遥控 Go2（官方 SportClient / 自研高层控制器）")
     add_endpoint_args(ap)                # --iface / --preset / --domain / --client
     ap.add_argument("--max-speed", type=float, default=0.4, help="最大线速度 m/s，默认 0.4")
-    ap.add_argument("--max-yaw", type=float, default=0.8, help="最大角速度 rad/s，默认 0.8")
+    ap.add_argument("--max-yaw", type=float, default=None,
+                    help="最大角速度 rad/s。默认按控制端取：推理模型 4.0"
+                         "（策略在 vyaw=1.0 时原地只有 0.13 rad/s，4.0 才有 0.74），"
+                         "原生运控 1.0（它按 rad/s 收，1.0 就是真 1.0）")
+    ap.add_argument("--strafe", type=float, default=None,
+                    help="侧向最大速度 m/s。默认跟随速度档（×1.5，上限 0.6）。"
+                         "策略的侧向响应是非线性的：0.3 只出 0.12 m/s，0.6 出 0.30")
+    ap.add_argument("--turn-boost", type=float, default=0.0,
+                    help="只按转向时叠加的前向速度 m/s，默认 0（关）。"
+                         "旧版给 0.2 是因为策略原地转不动，现在不用了")
     ap.add_argument("--duration", type=float, default=0.0, help="最长运行秒数，0=不限")
     ap.add_argument("--dry-run", action="store_true", help="不连狗，只打印速度")
     ap.add_argument("--yes", action="store_true", help="跳过开始前确认")
@@ -738,6 +841,9 @@ def main(argv=None) -> int:
                     help="关节阻尼，不给就用控制器默认（1.5）")
     ap.add_argument("--tau", type=float, default=None,
                     help="重力前馈强度 0~1（1=完全补偿体重），真机默认 1")
+    ap.add_argument("--torque", choices=("pd", "net"), default="pd",
+                    help="力矩来源（只对策略后端有效）：pd=驱动器 kp/kd，"
+                         "net=训练时的电机模型。仿真里 pd 更稳")
     args = ap.parse_args(argv)
 
     # 接哪一台、用哪个控制端 —— 问抽象层要。这里不碰网卡名、不碰域号，
@@ -761,7 +867,7 @@ def main(argv=None) -> int:
             print("  任意窗口都收按键 —— 去别的窗口打字也会驱动机器人。")
         else:
             ok = kb.front_ok()
-            print(f"  只在前台是终端 / IDE 时响应（当前前台: {kb.front_name}，"
+            print(f"  只在前台是终端 / IDE / 仿真窗口时响应（当前前台: {kb.front_name}，"
                   f"{'对得上' if ok else '不在白名单，按键会被丢掉'}）。")
             if not ok:
                 print("  点一下终端窗口让它到最前，或加 --keys-anywhere。")
@@ -777,7 +883,18 @@ def main(argv=None) -> int:
 
     backend = None
     client = None
-    ctrl = Controller(args.max_speed, args.max_yaw)
+    # 转向上限按控制端分。推理模型（策略网络）对 vyaw 的响应是非线性的：
+    # 命令 1.0 原地只有 0.13 rad/s，4.0 才有 0.74 —— 卡在 1.0 的表现就是
+    # 「按 q/e 几乎不转」，转 90° 要 12 秒。原生运控按 rad/s 直接执行，给 4.0
+    # 是让它原地打转，所以两种默认值不能共用一个。真机再降一档，见 YAW_POLICY_REAL。
+    if args.max_yaw is not None:
+        max_yaw = args.max_yaw
+    elif kind == "policy":
+        max_yaw = YAW_POLICY if ep.sim else YAW_POLICY_REAL
+    else:
+        max_yaw = YAW_NATIVE
+    ctrl = Controller(args.max_speed, max_yaw, vy_max=args.strafe,
+                      turn_boost=args.turn_boost)
     help_on = not args.dry_run
     peak = 0.0
     stopped = True
@@ -792,8 +909,11 @@ def main(argv=None) -> int:
     try:
         if not args.dry_run:
             try:
-                backend = connect(ep, kind, kp=args.kp, kd=args.kd,
-                                  tau=args.tau)
+                gains = dict(kp=args.kp, kd=args.kd, tau=args.tau)
+                if kind == "policy":
+                    # 策略后端多一个力矩来源，也接受 kp/kd（喂给 MotionService）。
+                    gains["torque"] = args.torque
+                backend = connect(ep, kind, **gains)
             except RuntimeError as e:
                 print(f"\n连不上：{e}")
                 return 1
@@ -821,16 +941,16 @@ def main(argv=None) -> int:
                 print("机器人状态: " + "  ".join(parts))
 
             print(HELP)
-            print(f"最大线速度 {args.max_speed:.2f} m/s，最大角速度 {args.max_yaw:.2f} rad/s")
+            print(f"最大线速度 {args.max_speed:.2f} m/s，最大角速度 {max_yaw:.2f} rad/s")
             print("确认狗周围至少 1 米空旷，人别站在它正前方。")
 
             if not args.yes:
                 print("\n还没开始。按 Enter 开始，ESC 取消。"
                       "（方向键这会儿不会让狗动）")
                 if kb.live and not kb.front_ok():
-                    print(f"  ⚠ 前台是「{kb.front_name}」，不在白名单里，"
-                          "按键会被丢掉 —— 点一下终端窗口，或加 --keys-anywhere。")
-                kb.events()                     # 丢掉这之前攒下的事件
+                    print(f"  ⚠ 前台是「{kb.front_name}」，不在白名单里。"
+                          "开始这一步不受影响；开始之后按键要落在终端或仿真窗口上。")
+                kb.events(ignore_front=True)     # 丢掉这之前攒下的事件
                 waiting = True
                 nudged = False
                 base_presses = kb.dir_presses()
@@ -843,7 +963,8 @@ def main(argv=None) -> int:
 
                 while waiting:
                     kb.pump(1.0)
-                    for name, _ in kb.events():
+                    # 这一步不看前台：前台停在仿真窗口也允许按 Enter 开始。
+                    for name, _ in kb.events(ignore_front=True):
                         if name == "quit":
                             print("已取消。")
                             return 0
@@ -879,7 +1000,7 @@ def main(argv=None) -> int:
                     print("\n切换风格（dry-run，不连狗）", flush=True)
                     return
                 label = backend.toggle_loco_gait()
-                print(f"\n风格 → {label}（跳和跑一起换）" if label else
+                print(f"\n步态 → {label}" if label else
                       "\n官方控制器的步态在机器上，改不了", flush=True)
                 return
             if name == "jump_gait":
@@ -934,15 +1055,22 @@ def main(argv=None) -> int:
                 if name == "dir":
                     ctrl.press(val, now)          # 终端模式靠它续期意图
                 elif name == "speed":
-                    ctrl.max_lin = val / 10.0
-                    print(f"\n最大线速度 {ctrl.max_lin:.2f} m/s")
+                    ctrl.set_speed(val / 10.0)
+                    print(f"\n最大线速度 {ctrl.max_lin:.2f} m/s"
+                          f"（侧向 {ctrl.vy_max:.2f}）")
                 elif name == "help":
                     help_on = not help_on
                     print(HELP if help_on else "\n(帮助已关闭)")
                 elif name == "quit":
                     quit_now = True
-                else:                             # jump / crouch / stop / balance
-                    dispatch(name)
+                else:                             # jump / crouch / stop / balance / gait
+                    # 任意异常都在这里收住。切步态 / 跳跃在别的后端上可能抛任何
+                    # 类型，漏一种就是整个遥控器退出。
+                    try:
+                        dispatch(name)
+                    except Exception as err:      # noqa: BLE001
+                        print(f"\n{name} 失败（{type(err).__name__}）：{err}",
+                              flush=True)
 
             if not got_key and not hint_done and now - t_start > 5:
                 hint_done = True
@@ -951,6 +1079,13 @@ def main(argv=None) -> int:
 
             if quit_now:
                 break
+            # 策略线程判摔会自己停（倾角 > 46°），主循环还在、按键却不再有效。
+            # 说清楚原因，别让人以为键盘坏了。
+            svc = getattr(backend, "svc", None) if backend is not None else None
+            if svc is not None and svc.fell:
+                print("\n策略判摔停机（倾角超过 46°）。狗已经不动了，"
+                      "重启仿真后再来。", flush=True)
+                break
 
             # 全局监听有真实的按住状态，直接用；终端模式没有，退回 deadline 意图
             active = {k for k in DIRS if kb.pressed(k)} if kb.live else None
@@ -958,21 +1093,32 @@ def main(argv=None) -> int:
             peak = max(peak, abs(vx), abs(vy))
 
             ret: int | None = None
-            if client:
+            # 外层判 backend 而不是 client：策略后端没有 client，速度走
+            # `backend.move()`，命令落在 MotionService 上。之前这里写的是
+            # `if client:`，策略后端整块被跳过，按键只让腿原地踏步。
+            if backend is not None:
                 if backend.busy:
                     # 腿在被跳跃 / 蹲伏占着，这会儿别插速度指令。方向键仍照常
                     # 记着，动作一播完（下一帧 busy 变 False）就接着走。
                     pass
                 elif ctrl.moving:
-                    ret = client.Move(vx, vy, vyaw)
-                    if ret != 0:
-                        send_err += 1
-                        if send_err >= 5:
-                            print("\n连续 5 次发送失败，停车退出")
-                            break
+                    if client is not None:
+                        ret = client.Move(vx, vy, vyaw)
+                        if ret != 0:
+                            send_err += 1
+                            if send_err >= 5:
+                                print("\n连续 5 次发送失败，停车退出")
+                                break
+                    else:
+                        # 策略后端：只发速度，步态与抬脚高度保持当前值，
+                        # Tab 才是切步态的地方。
+                        backend.move(vx, vy, vyaw)
                     stopped = False
                 elif not stopped:
-                    ret = backend.stop_motion()     # 非阻塞：收步交给控制回路
+                    # 不接返回值：`stop_motion()` 给的是 dict（命令回执），
+                    # 而 `ret` 在下面按整数格式化。接了就在这里抛
+                    # `dict.__format__`，而且要等到第一次停车才炸。
+                    backend.stop_motion()           # 非阻塞：收步交给控制回路
                     stopped = True
 
             pos = backend.pos if backend is not None else None
@@ -992,7 +1138,7 @@ def main(argv=None) -> int:
             log_tick += 1
             if log and log_tick % 5 == 0:
                 log.write(f"{elapsed:6.2f} {vx:+.2f} {vy:+.2f} {vyaw:+.2f}"
-                          f"  {ret if ret is not None else '-':<3}"
+                          f"  {str(ret) if ret is not None else '-':<3}"
                           f"{(real or (0, 0))[0]:+.2f} {(real or (0, 0))[1]:+.2f}")
 
             if args.duration and elapsed >= args.duration:

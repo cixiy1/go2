@@ -99,7 +99,7 @@ class SRBDRef:
     vx: float = 0.0
     vy: float = 0.0
     yaw_rate: float = 0.0
-    height: float = 0.27
+    height: float = 0.30
 
     def state(self, p_xy, yaw) -> np.ndarray:
         x = np.zeros(12)
@@ -464,7 +464,7 @@ def dynamics(state: SRBDState, forces, feet_rel, mass, inertia) -> np.ndarray:
 
 # 站姿的整机参数，MPC 的默认值就从这儿来。腿的姿态会改变惯量 5% 左右，
 # 蹲到 0.15 m 时才需要重算。
-def nominal_params(height: float = 0.27) -> dict:
+def nominal_params(height: float = 0.30) -> dict:
     q12 = np.tile([0.0, 0.9, -1.8], 4)
     return dict(mass=TOTAL_MASS, inertia=whole_body_inertia(q12),
                 com_body=whole_body_com(q12))

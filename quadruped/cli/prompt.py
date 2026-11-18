@@ -77,8 +77,11 @@ class Form:
 
     `rows` 是 (标签, key, 显示函数, 编辑函数)：
 
-    - 显示函数收当前值，返回要打印的字符串；
-    - 编辑函数收当前值，返回新值 —— 用户取消、输入非法时就返回原值。
+    - 显示函数收 (当前值, 整张表)，返回要打印的字符串；
+    - 编辑函数收 (当前值, 整张表)，返回新值 —— 用户取消、输入非法时返回原值。
+
+    第二个参数是给「这项在别的选择下没有意义」用的：选了推理模型控制端，运控那行
+    要显示「不适用」，不能还挂着一个「开启」骗人。
 
     不做成「逐项都问一遍」，是因为全默认也要敲好几次回车；一屏现状 + 按需
     修改更省事。
@@ -100,7 +103,7 @@ class Form:
             for line in self.note.splitlines():
                 print(f"  {line}")
         for i, (label, key, show, _) in enumerate(self.rows, 1):
-            print(f"  {i}  {pad(label, 10)}{show(self.values[key])}")
+            print(f"  {i}  {pad(label, 10)}{show(self.values[key], self.values)}")
 
     def run(self) -> dict:
         while True:
@@ -113,4 +116,4 @@ class Form:
                 print(f"  「{raw}」不是一个能改的编号")
                 continue
             _, key, _, edit = self.rows[got[0] - 1]
-            self.values[key] = edit(self.values[key])
+            self.values[key] = edit(self.values[key], self.values)

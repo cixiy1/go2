@@ -70,8 +70,8 @@ class Go2Robot:
     # 没有 rt/api/sport/request 的服务端，官方 SportClient 发过去只会等到超时，
     # 所以仿真只有自研一个，真机两个都有。
     CLIENTS = {
-        "sim": ("ours",),
-        "real": ("official", "ours"),
+        "sim": ("ours", "policy"),
+        "real": ("official", "ours", "policy"),
     }
 
     # -- 网卡 → 环境 ----------------------------------------------------
@@ -196,7 +196,7 @@ class Go2Robot:
                  kp: float | None = None, kd: float | None = None,
                  kp_calf: float | None = None, gait: GaitParams | None = None,
                  tau_ff: float | None = None,
-                 real_params: bool | None = None):
+                 real_params: bool | None = None, motion: str | None = None):
         cfg = self.resolve(preset, domain=domain, iface=iface)
         self.preset = cfg["preset"]
         self.clients = self.clients_for(self.preset)     # 本环境可用的控制端
@@ -215,7 +215,7 @@ class Go2Robot:
         self.controller = Go2Controller(
             domain=cfg["domain"], iface=cfg["iface"],
             height=height, kp=kp, kd=kd, kp_calf=kp_calf, gait=gait,
-            real=real_params, tau_ff=tau_ff)
+            real=real_params, tau_ff=tau_ff, mode=motion)
 
         # MPC / WBC 在这里就建好，不等第一次行走。
         #
