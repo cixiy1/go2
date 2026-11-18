@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Go2 控制面</title>
+<style>
+  :root{
+    --bg:#111417; --panel:#181d21; --line:#262d33; --fg:#e6e9ec;
+    --dim:#8d979f; --ok:#3fbf7f; --warn:#e0a13c; --bad:#e05c5c; --accent:#4a9cf0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+       padding:18px;max-width:860px;margin:0 auto}
+  h1{font-size:16px;font-weight:600;margin:0 0 14px;display:flex;
+     align-items:center;gap:10px}
+  #dot{width:9px;height:9px;border-radius:50%;background:var(--dim)}
+  #dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  #dot.warn{background:var(--warn)}
+  #dot.bad{background:var(--bad)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+        gap:10px;margin-bottom:16px}
+  .cell{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+        padding:10px 12px}
+  .cell .k{color:var(--dim);font-size:12px;margin-bottom:4px}
+  .cell .v{font-size:20px;font-variant-numeric:tabular-nums}
+  .cell .v small{font-size:12px;color:var(--dim);margin-left:3px}
+  .bar{display:flex;gap:10px;margin-bottom:16px}
+  button{flex:1;padding:13px 0;border-radius:8px;border:1px solid var(--line);
+         background:var(--panel);color:var(--fg);font-size:15px;cursor:pointer}
+  button:hover{border-color:#3a454e}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  #go{border-color:#2b5d3f;background:#1b2b23;color:#bfe8d1}
+  #halt{border-color:#5d2b2b;background:#2b1b1b;color:#e8c1c1}
+  pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+      padding:10px 12px;margin:0;height:260px;overflow:auto;font-size:12px;
+      line-height:1.55;color:#b9c2c9;white-space:pre-wrap;word-break:break-all}
+  .note{color:var(--dim);font-size:12px;margin:0 0 14px}
+  #ask{display:none;margin-bottom:14px}
+  #ask input{width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);
+             background:var(--panel);color:var(--fg)}
+  #say{width:100%;padding:12px;border-radius:8px;border:1px solid var(--line);
+       background:var(--panel);color:var(--fg);margin-bottom:10px}
+  #view{width:100%;border-radius:8px;border:1px solid var(--line);
+        margin-bottom:10px;display:none;background:#0c0f11}
+  #reply{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+         padding:8px 12px;margin:0 0 14px;min-height:40px}
+  #reply .k{color:var(--dim);font-size:12px;margin-bottom:4px}
+  #reply .row{margin:3px 0;line-height:1.5}
+  #reply .you{color:var(--dim)}
+  #reply .you b{color:var(--fg);font-weight:600}
+  #reply .it{color:var(--fg)}
+  #reply .st{color:var(--dim);font-size:12px;margin-left:6px}
+  #reply .wait{color:#c98a2b}
+</style>
+</head>
+<body>
+<h1><span id="dot"></span><span id="state">连接中…</span></h1>
+<p class="note">接管要求狗已经站着（官方运控站好再按）。停止会走收尾：蹲下 → 阻尼 → 交还 mcf。</p>
+
+<div id="ask"><input id="tok" placeholder="输入 token（启动日志里那 5 位）"></div>
+
+<div class="grid">
+  <div class="cell"><div class="k">策略回路</div><div class="v"><span id="hz">–</span><small>Hz</small></div></div>
+  <div class="cell"><div class="k">前进命令</div><div class="v" id="vx">–</div></div>
+  <div class="cell"><div class="k">前方</div><div class="v"><span id="gap">–</span><small>m</small></div></div>
+  <div class="cell"><div class="k">推理</div><div class="v"><span id="gen">–</span><small>s/次</small></div></div>
+  <div class="cell"><div class="k">位置 x / y</div><div class="v" id="pos">–</div></div>
+  <div class="cell"><div class="k">朝向</div><div class="v"><span id="yaw">–</span><small>°</small></div></div>
+</div>
+
+<div class="bar">
+  <button id="go">接管</button>
+  <button id="halt">停止</button>
+</div>
+
+<img id="view" alt="机载画面与想法">
+<input id="say" placeholder="对它说一句话（指令或闲聊，比如「往前走」「你看到什么」），回车发送">
+<div id="reply"><div class="k">对话</div><div id="said">–</div></div>
+
+<pre id="log">（还没有日志）</pre>
+
+<script>
+const $ = id => document.getElementById(id);
+let token = localStorage.getItem("go2tk") || new URLSearchParams(location.search).get("t") || "";
+if (token) localStorage.setItem("go2tk", token);
+
+async function api(path, method = "GET", body) {
+  const r = await fetch(path + (path.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(token),
+    {method, headers: {"X-Token": token, "Content-Type": "application/json"},
+     body: body ? JSON.stringify(body) : undefined});
+  if (r.status === 401) { $("ask").style.display = "block"; throw new Error("401"); }
+  return r.json();
+}
+
+function setDot(cls, text) {
+  $("dot").className = cls;
+  $("state").textContent = text;
+}
+
+const STATE_CN = {idle: "未接管", starting: "启动中…", running: "运行中",
+                  stopping: "停止中（等收尾）", exited: "子进程已退出"};
+
+// 画面：单独一条快循环，不跟指标走。
+//
+// 子进程按 20 Hz 导 JPEG。原来画面跟着 `poll` 每秒更新一次 —— 服务端再快也只能
+// 看到 1 fps，表现是「机载摄像头帧数太低」。现在 12 Hz 问一次版本号（几十字节），
+// 变了才下整张图；上一张没下完不发下一个请求，免得把连接堆起来。
+let frameVer = 0, frameBusy = false, alive = false;
+
+async function frame() {
+  if (!alive || frameBusy) return;
+  try {
+    const tick = await api("/api/tick");
+    if (!tick.ts || tick.ts === frameVer) return;
+    frameVer = tick.ts;
+    frameBusy = true;
+    const img = $("view");
+    img.src = "/api/frame?t=" + encodeURIComponent(token) + "&v=" + frameVer;
+    img.style.display = "block";
+  } catch (e) { frameBusy = false; }
+}
+
+async function poll() {
+  try {
+    const s = await api("/api/status");
+    setDot(s.alive ? "on" : (s.state === "exited" ? "bad" : ""),
+           STATE_CN[s.state] || s.state);
+    const st = s.status || {};
+    $("hz").textContent = st.hz ?? "–";
+    $("vx").textContent = st.vx != null ? st.vx.toFixed(2) : "–";
+    $("gap").textContent = st.gap != null ? st.gap.toFixed(2) : "无视野";
+    $("gen").textContent = st.gen != null ? st.gen.toFixed(2) : "–";
+    $("pos").textContent = st.x != null ? `${st.x.toFixed(1)} / ${st.y.toFixed(1)}` : "–";
+    $("yaw").textContent = st.yaw != null ? st.yaw.toFixed(0) : "–";
+    $("go").disabled = s.alive;
+    $("halt").disabled = !s.alive;
+    $("say").disabled = !s.alive;
+    lastDialog = s.dialog || [];
+    pendingSaid = [];                // 服务端已经记下了，本地的乐观条目可以撤了
+    renderDialog();
+    alive = !!s.alive;
+    if (s.exit_code !== null && s.exit_code !== undefined && !s.alive)
+      $("state").textContent = `子进程已退出（code ${s.exit_code}）`;
+  } catch (e) { setDot("bad", "连不上"); }
+}
+
+async function log() {
+  try {
+    const d = await api("/api/log?n=40");
+    const box = $("log");
+    const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+    box.textContent = d.lines.join("\n") || "（还没有日志）";
+    if (atBottom) box.scrollTop = box.scrollHeight;
+  } catch (e) { /* 401 已经提示过 */ }
+}
+
+$("go").onclick = async () => {
+  const r = await api("/api/start", "POST");
+  if (!r.ok) alert("没起来：" + (r.why || "未知"));
+  poll();
+};
+$("halt").onclick = async () => {
+  if (!confirm("停止会蹲下并交还官方运控，确定？")) return;
+  await api("/api/stop", "POST");
+  poll();
+};
+$("tok").onchange = e => { token = e.target.value.trim();
+  localStorage.setItem("go2tk", token); $("ask").style.display = "none"; poll(); };
+
+$("say").onkeydown = async e => {
+  if (e.key !== "Enter") return;
+  const text = e.target.value.trim();
+  if (!text) return;
+  e.target.value = "";
+  // 先本地显示，再发。等服务端回话（下一次 poll）可能要 1 秒 —— 那 1 秒里
+  // 输入框已经清空、页面没任何变化，看起来就是「没发出去」。
+  pendingSaid.push(text);
+  renderDialog();
+  try {
+    const r = await api("/api/say", "POST", {text});
+    if (!r.ok) {
+      pendingSaid = pendingSaid.filter(t => t !== text);
+      renderDialog();
+      alert("没送到：" + (r.why || "未知"));
+      return;
+    }
+  } catch (err) {
+    pendingSaid = pendingSaid.filter(t => t !== text);
+    renderDialog();
+    alert("没送到：" + err.message);
+    return;
+  }
+  poll();                              // 拿「排队中」换成「已送达」
+};
+
+// 对话的渲染。
+//
+// 原来只有一个「它说」格子，只显示模型最近一次 `reply`。问题是**下指令时模型
+// 通常不写 reply**（它只改命令），格子一动不动，人说第二句时看不到任何变化，
+// 就以为「发不出去了」。现在把「我说的」也列出来：`got` 由子进程打一行
+// `[L] 收到：` 确认 —— 看到「你：往前走」且没有「排队中」，就说明话进去了。
+function esc(s) {
+  return String(s).replace(/[&<>"]/g,
+    c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+}
+
+let lastDialog = [], pendingSaid = [], dialogKey = "";
+
+function renderDialog() {
+  const all = lastDialog.concat(
+    pendingSaid.map(t => ({you: t, got: false, it: ""})));
+  const key = JSON.stringify(all);
+  if (key === dialogKey) return;          // 没变就别重排，1 秒一次也够烦的
+  dialogKey = key;
+  const box = $("said");
+  if (!all.length) { box.textContent = "–"; return; }
+  box.innerHTML = all.map(d => {
+    const ack = d.got ? "" : '<span class="st wait">排队中…</span>';
+    const it = d.it ? `<div class="row it">它：${esc(d.it)}</div>` : "";
+    return `<div class="row you">你：<b>${esc(d.you)}</b>${ack}</div>${it}`;
+  }).join("");
+}
+// 这张图下完了才去问下一个版本号。不这么串起来的话，src 连续改写会让浏览器
+// 取消前一个请求，看起来是「画面一顿一顿」而不是「帧率低」。
+$("view").onload = () => { frameBusy = false; };
+$("view").onerror = () => { frameBusy = false; $("view").style.display = "none"; };
+
+poll(); log(); frame();
+setInterval(poll, 1000);
+setInterval(log, 2000);
+setInterval(frame, 50);
+</script>
+</body>
+</html>
