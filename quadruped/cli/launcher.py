@@ -544,6 +544,11 @@ def run_with_sim(cmd: list[str], env: dict, scene: str = "flat",
         return 2
     sim_env = dict(os.environ)
     sim_env["SIM_SCENE"] = str(path)
+    # 机载画面频率。仿真侧默认已经改成 30 Hz（见 `rates.CAMERA_HZ` 的说明），
+    # 这里再显式给一次：`percept_pub.py` 在第三方目录里、不入版本库，靠
+    # `patches/` 跟踪，万一那台机器还是旧的 5 Hz，遥操作画面就是一秒五帧。
+    # 想更高（60）就在外面设 SIM_VIDEO_HZ，这里不覆盖已有的值。
+    sim_env.setdefault("SIM_VIDEO_HZ", "30")
     title = _SCENE_TEXT.get(scene, scene)
     print(f"起 MuJoCo 仿真器（{'窗口' if window else '无窗口'}，场景 {title}，"
           f"{path.name}）…")
