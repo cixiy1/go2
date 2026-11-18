@@ -36,10 +36,12 @@ STOP_GRACE = 25.0
 class VlaHost:
     """VLA 子进程的托管者。"""
 
-    def __init__(self, *, preset: str, event_port: int, echo: bool = True):
+    def __init__(self, *, preset: str, event_port: int, echo: bool = True,
+                 iface: str | None = None):
         self.preset = preset
         self.event_port = event_port
         self.echo = echo
+        self.iface = iface
         self.child: Child | None = None
         self.stream_path = Path(tempfile.gettempdir()) / "go2-vla-stream.jpg"
         self.log_path = (ROOT / "logs" /
@@ -68,6 +70,8 @@ class VlaHost:
                 "--stream", str(self.stream_path),
                 "--events", f"127.0.0.1:{self.event_port}",
                 "--interactive", "--log", str(self.log_path)]
+        if self.iface:
+            args += ["--iface", self.iface]
         if goal:
             args += ["--goal", goal]
         env = {"GO2_SCENE": scene} if scene else None

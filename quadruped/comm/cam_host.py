@@ -37,10 +37,12 @@ STOP_GRACE = 5.0
 class CamHost:
     """相机馈送进程的托管者。"""
 
-    def __init__(self, *, preset: str, hz: float = 8.0, echo: bool = True):
+    def __init__(self, *, preset: str, hz: float = 8.0, echo: bool = True,
+                 iface: str | None = None):
         self.preset = preset
         self.hz = hz
         self.echo = echo
+        self.iface = iface
         self.child: Child | None = None
         # 文件名带 pid：同时跑两个网关时不会互相覆盖同一个文件。
         self.stream_path = Path(tempfile.gettempdir()) / f"go2-cam-{os.getpid()}.jpg"
@@ -64,6 +66,8 @@ class CamHost:
         args = [interpreter(), "-m", "quadruped.percept.feed",
                 "--preset", self.preset, "--out", str(self.stream_path),
                 "--hz", f"{self.hz:g}", "--radar-out", str(self.radar_path)]
+        if self.iface:
+            args += ["--iface", self.iface]
         self._log(f"起馈送：{' '.join(args[3:])}")
         self.child = Child(name="cam", args=args, cwd=ROOT,
                            echo=self.echo).start()

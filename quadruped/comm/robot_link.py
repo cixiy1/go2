@@ -38,13 +38,22 @@ class RobotLink:
 
     def __init__(self, *, socket_path: str = DEFAULT_SOCKET, host: str | None = None,
                  port: int = DEFAULT_PORT, preset: str = "sim",
-                 manage: str = "auto", poll_hz: float = POLL_HZ,
-                 echo: bool = True):
+                 manage: str = "auto", client: str | None = None,
+                 iface: str | None = None,
+                 poll_hz: float = POLL_HZ, echo: bool = True):
         self.socket_path = socket_path
         self.host = host
         self.port = int(port)
         self.preset = preset
         self.manage = manage
+        # 网卡名。不给就按 preset 的默认值（真机是 "en5"，这是 macOS 的编号）。
+        # 在扩展坞上要显式给 "eth10" —— 那边的默认值对不上，`require_iface`
+        # 会直接抛「网卡不存在」，看起来像没插线。
+        self.iface = iface
+        # 高层控制端：official / ours / policy。None = 让服务端按端点自己挑默认值
+        # （仿真 ours、真机 official）。attach 到别人起的服务端时这个字段只作记录，
+        # 真实值以服务端 `status` 回报的 `client` 为准。
+        self.client_kind = client
         self.poll_hz = poll_hz
         self.echo = echo
         self.client: RobotClient | None = None
@@ -88,6 +97,10 @@ class RobotLink:
     def _spawn(self) -> None:
         args = [interpreter(), "-m", "quadruped.comm.server",
                 "--preset", self.preset, "--quiet"]
+        if self.iface:
+            args += ["--iface", self.iface]
+        if self.client_kind:
+            args += ["--client", self.client_kind]
         if self.host:
             args += ["--host", self.host, "--port", str(self.port)]
         else:
@@ -180,6 +193,32 @@ class RobotLink:
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline and self._listening():
                 time.sleep(0.2)
+
+    # 当前生效的控制端。服务端说的算；它没说（老版本）就退回我们请求的那个。
+    @property
+    def controller(self) -> str:
+        return str(self.status.get("client") or self.client_kind or "")
+
+    # 这个端点可选的控制端，来自服务端。空列表表示对端没报（老版本）。
+    @property
+    def available(self) -> list[str]:
+        got = self.status.get("clients")
+        return [str(k) for k in got] if isinstance(got, list) else []
+
+    # 换控制端 = 重启服务端。三种后端在构造时就装配好了（Go2Robot / SportClient /
+    # PolicyBackend），没有「热插拔」这回事。
+    #
+    # 只允许换自己起的那个：别人起的服务端用什么 --client 是他决定的，我们既改不了
+    # 也不该偷偷杀掉它。
+    def restart(self, kind: str, grace: float = 15.0) -> None:
+        if not self.owns_server:
+            raise RuntimeError(
+                "服务端不是网关起的（--robot attach），换控制端要用它自己的 "
+                f"--client 重启。当前：{self.controller or '未知'}")
+        self._log(f"换控制端：{self.controller or '默认'} → {kind}")
+        self.shutdown(grace=grace)
+        self.client_kind = kind
+        self.open()
 
     def describe(self) -> dict:
         return {

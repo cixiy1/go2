@@ -179,7 +179,7 @@ class Gateway:
 
     def __init__(self, *, host: str, port: int, token: str, socket_path: str,
                  preset: str, robot_manage: str, host_flag: str | None,
-                 client: str | None = None,
+                 client: str | None = None, iface: str | None = None,
                  events_port: int = 0, camera: bool = True,
                  cam_hz: float = 30.0, verbose: bool = True):
         self.host = host
@@ -198,9 +198,11 @@ class Gateway:
         self.setpoint_src = "-"
         self.driving = False
         self.robot: RobotLink | None = None
+        self.iface = iface
         self._robot_args = dict(socket_path=socket_path, host=host_flag,
                                 port=DEFAULT_PORT, preset=preset,
-                                manage=robot_manage, client=client, echo=verbose)
+                                manage=robot_manage, client=client,
+                                iface=iface, echo=verbose)
         # VLA 事件从 UDP 进来，端口由内核分配，再告诉子进程。
         self._udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # 端口给 0 由内核分配（默认）。给固定端口是为了让「VLA 跑在另一台机器
@@ -210,10 +212,10 @@ class Gateway:
         self._udp.settimeout(0.5)
         self.event_port = self._udp.getsockname()[1]
         self.vla = VlaHost(preset=preset, event_port=self.event_port,
-                           echo=verbose)
+                           echo=verbose, iface=iface)
         # 手动模式下的相机馈送。VLA 在跑时不用它 —— 那一侧自己就在取相机。
         self.camera = bool(camera)
-        self.cam = CamHost(preset=preset, hz=cam_hz, echo=verbose)
+        self.cam = CamHost(preset=preset, hz=cam_hz, echo=verbose, iface=iface)
         self.vla_event: dict = {}
         self.vla_replies: deque[dict] = deque(maxlen=40)
         # 雷达：由 `percept.feed` 写 JSON，这里按 mtime 变化读。
@@ -952,6 +954,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="仿真还是真机。网关自己要起服务端 / VLA 时用这个")
     ap.add_argument("--client", choices=CONTROLLERS, default=None,
                     help="高层控制端。不给：仿真 ours、真机 official（服务端自己挑）")
+    # 网卡名。不写死：真机默认是 "en5"，那是 macOS 的编号；扩展坞上是 "eth10"。
+    # 不给就按 preset 的默认值，走错网卡时 `require_iface` 会报「网卡不存在」，
+    # 看起来像没插线，实际只是名字不对。
+    ap.add_argument("--iface", default=os.environ.get("GO2_IFACE") or None,
+                    help="DDS 走的网卡，默认按 preset 推（可用 GO2_IFACE 环境变量）")
     ap.add_argument("--robot", choices=("auto", "attach", "spawn"), default="auto",
                     help="auto=有服务端就连、没有就起；attach=只连不起；"
                          "spawn=总是自己起一个")
@@ -997,6 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
     gw = Gateway(host=args.host, port=args.port, token=token,
                  socket_path=args.socket, preset=args.preset,
                  robot_manage=args.robot, host_flag=None, client=args.client,
+                 iface=args.iface,
                  events_port=args.events_port,
                  camera=not args.no_camera,
                  cam_hz=max(1.0, min(60.0, args.cam_hz)),

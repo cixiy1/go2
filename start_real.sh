@@ -74,6 +74,7 @@ echo
 exec "$PY" -m quadruped.comm.gateway \
     --preset real \
     --client official \
+    --iface "$iface" \
     --host "$BIND" \
     --port "$PORT" \
     --token "$TOKEN" \

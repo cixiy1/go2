@@ -20,10 +20,17 @@ class AppSettings extends ChangeNotifier {
   static const _kCam = 'camera_on';
   static const _kBgSource = 'bg_source';
   static const _kBgSize = 'bg_size';
+  static const _kGlass = 'glass';
 
-  String host = '127.0.0.1';
+  // 手机和桌面默认地址不一样：网关跑在这台 Mac 上，桌面直接走回环，
+  // 手机必须走局域网。给手机一个 127.0.0.1 等于装完就连不上，还看不出
+  // 是填错了还是网关没起 —— 所以按平台给不同的默认值。
+  //
+  // 这个 IP 是 Mac 在 Yukiho 热点里的地址，DHCP 分配，重连后可能变。
+  // 变了就在连接页改一次，改完会记住。
+  String host = defaultHost();
   int port = 8780;
-  String token = '';
+  String token = defaultToken();
   String name = 'Flutter';
   double deadzone = 0.12;
   double expo = 0.25;
@@ -35,6 +42,11 @@ class AppSettings extends ChangeNotifier {
   // 'small'（右上角小窗）。默认相机 + 主视图 —— 遥控时先看到路，再谈别的。
   String bgSource = 'camera';
   String bgSize = 'main';
+
+  // 毛玻璃。侧栏、顶栏、手机底栏是半透明 + 背景模糊（对齐 FlClash 的
+  // LiquidGlass 观感）。低端设备上 BackdropFilter 每帧采样背景，卡的话关掉 ——
+  // 关掉后这些栏退化成纯填充，布局不变。
+  bool glass = true;
 
   // 设备名会出现在「谁在控制」的提示里。默认取平台，用户可改。
   static String defaultName() {
@@ -51,6 +63,24 @@ class AppSettings extends ChangeNotifier {
     return 'App';
   }
 
+  //! 网关所在机器的局域网地址（Mac 连 Yukiho 热点时拿到的）。
+  //!
+  //! 手机必须用这个；桌面用 127.0.0.1 就够，走回环少一层。
+  static const lanHost = '10.216.47.152';
+
+  static String defaultHost() {
+    if (kIsWeb) return 'localhost';
+    try {
+      if (Platform.isAndroid || Platform.isIOS) return lanHost;
+    } catch (_) {}
+    return '127.0.0.1';
+  }
+
+  //! 网关的默认口令。`start_real.sh` 和网关的 `--token` 都是这个值。
+  //!
+  //! 上公网前必须改掉 —— 它只是给局域网调试省一次输入。
+  static String defaultToken() => 'demo';
+
   Future<void> load() async {
     final p = await SharedPreferences.getInstance();
     host = p.getString(_kHost) ?? host;
@@ -64,6 +94,7 @@ class AppSettings extends ChangeNotifier {
     cameraOn = p.getBool(_kCam) ?? cameraOn;
     bgSource = p.getString(_kBgSource) ?? bgSource;
     bgSize = p.getString(_kBgSize) ?? bgSize;
+    glass = p.getBool(_kGlass) ?? glass;
     notifyListeners();
   }
 
@@ -80,6 +111,7 @@ class AppSettings extends ChangeNotifier {
     await p.setBool(_kCam, cameraOn);
     await p.setString(_kBgSource, bgSource);
     await p.setString(_kBgSize, bgSize);
+    await p.setBool(_kGlass, glass);
     notifyListeners();
   }
 
