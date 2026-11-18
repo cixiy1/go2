@@ -1,0 +1,28 @@
+[Unit]
+Description=Go2 网页控制面（起停 VLA 进程）
+# 等网络起来：DDS 要绑到 en5/eth0，网卡没 up 时 ChannelFactoryInitialize 会失败。
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/go2
+EnvironmentFile=-/etc/go2.env
+ExecStart=/opt/go2/.venv/bin/python -m quadruped.web.app --iface ${GO2_IFACE} --port ${GO2_PORT}
+
+# 只在 main 进程上停：子进程（VLA）自己也有 SIGTERM 处理，会按
+# 「蹲下 → 阻尼 → 交还 mcf」收尾。用默认的 control-group 会两边同时收，
+# 收尾日志互相穿插、也看不出谁在等我。
+KillMode=mixed
+# 子进程收尾要 8 s（蹲下 + 阻尼），留够余量再 SIGKILL。
+TimeoutStopSec=25
+
+# 任何路径的退出都跑一次交还：正常退出时 mcf 已经还了，它什么都不做；
+# kill -9 / OOM 之后，这是唯一把官方遥控器救回来的地方。
+ExecStopPost=-/opt/go2/.venv/bin/python /opt/go2/deploy/release_mcf.py
+
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
