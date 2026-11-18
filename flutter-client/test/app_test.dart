@@ -1,0 +1,121 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:go2_remote/core/models.dart';
+import 'package:go2_remote/core/settings.dart';
+import 'package:go2_remote/ui/widgets/joystick.dart';
+
+// 客户端最容易被悄悄改坏的两块：网关报文的解析、摇杆到意图的那一步符号。
+// 这两个都不是「看起来对不对」能发现的 —— 方向反了狗会朝人走过来。
+void main() {
+  group('报文解析', () {
+    test('半份状态帧不抛异常', () {
+      // 切模式中间态：机器人已经放下、VLA 还没起来，字段是缺的。
+      final st = GatewayState.fromJson({'mode': 'switching', 'robot': {}});
+      expect(st.mode, 'switching');
+      expect(st.robot.height, isNull);
+      expect(st.lease.mine, isFalse);
+      expect(st.limits.vx, 1.0);
+    });
+
+    test('VLA 帧的字段映射', () {
+      final f = VlaFrame.fromJson({
+        'seq': 12,
+        't': 3.5,
+        'cmd': {'vx': 0.25, 'vy': 0.0, 'vyaw': -0.1},
+        'gait': 'trot',
+        'front_gap': 1.42,
+        'sectors': [
+          {'name': '正前', 'gap': 1.42, 'top': 0.0},
+          {'name': '左前', 'gap': 2.9, 'top': 0.0},
+        ],
+        'thought': '左边空着',
+        'reply': '我往左走',
+        'reply_seq': 3,
+        'guard': {'trips': 1, 'last': '正前 0.42'},
+        'memory': {'cells': 7, 'travelled': 2.5},
+        'pos': [1.25, -0.5],
+        'policy_hz': 49.2,
+        'vision': {'frames': 120, 'dropped': 2, 'views': 9, 'gen_s': 1.1},
+        'alert': true,
+      });
+      expect(f.hasData, isTrue);
+      expect(f.vx, 0.25);
+      expect(f.gait, 'trot');
+      expect(f.sectors.length, 2);
+      expect(f.sectors.first.name, '正前');
+      expect(f.replySeq, 3);
+      expect(f.guardTrips, 1);
+      expect(f.memoryMetres, 2.5);
+      expect(f.pos![0], 1.25);
+      expect(f.policyHz, 49.2);
+      expect(f.vision.dropped, 2);
+      expect(f.alert, isTrue);
+    });
+
+    test('清空 VLA 后的空帧 hasData 为 false', () {
+      final f = VlaFrame.fromJson({});
+      expect(f.hasData, isFalse);
+      expect(f.sectors, isEmpty);
+    });
+  });
+
+  group('手感曲线', () {
+    test('死区内归零', () {
+      final s = AppSettings()..deadzone = 0.12;
+      expect(s.shape(0.1), 0);
+      expect(s.shape(-0.1), 0);
+      expect(s.shape(0.05), 0);
+    });
+
+    test('满杆仍然是 1', () {
+      final s = AppSettings()..deadzone = 0.12..expo = 0.3;
+      expect(s.shape(1.0), closeTo(1.0, 1e-9));
+      expect(s.shape(-1.0), closeTo(-1.0, 1e-9));
+    });
+
+    test('曲线压低小杆量', () {
+      final s = AppSettings()..deadzone = 0.0..expo = 0.5;
+      expect(s.shape(0.3), lessThan(0.3));
+      expect(s.shape(0.3), greaterThan(0));
+    });
+  });
+
+  group('摇杆', () {
+    testWidgets('拖动产生 -1~1 的偏移，松手归零', (tester) async {
+      final values = <Offset>[];
+      await tester.pumpWidget(MaterialApp(
+        home: Center(
+          child: Joystick(size: 160, onChanged: values.add),
+        ),
+      ));
+      final center = tester.getCenter(find.byType(Joystick));
+      final gesture = await tester.startGesture(center);
+      await gesture.moveBy(const Offset(60, 0));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+
+      expect(values, isNotEmpty);
+      final pushed = values.firstWhere((v) => v.dx > 0.1);
+      expect(pushed.dx, greaterThan(0));
+      expect(pushed.dy.abs(), lessThan(0.01));
+      expect(values.last, Offset.zero);
+    });
+
+    testWidgets('lockY 只输出横向', (tester) async {
+      final values = <Offset>[];
+      await tester.pumpWidget(MaterialApp(
+        home: Center(
+          child: Joystick(size: 160, lockY: true, onChanged: values.add),
+        ),
+      ));
+      final center = tester.getCenter(find.byType(Joystick));
+      final gesture = await tester.startGesture(center);
+      await gesture.moveBy(const Offset(40, 40));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+      expect(values.any((v) => v.dx > 0.1 && v.dy == 0), isTrue);
+    });
+  });
+}
