@@ -60,6 +60,17 @@ uv run python -m quadruped.cli.main telemetry
 
 第一次跑步态建议把机器吊起来，或者手留在电源上。
 
+### App（Flutter 客户端）
+
+```sh
+uv run python -m quadruped.comm.gateway --preset sim   # 网关，常驻
+cd flutter-client && flutter run -d macos             # 客户端（或 chrome / 安卓）
+```
+
+`flutter-client/` 是手机 / 桌面 / 网页三端共用的遥控与 VLA 观测界面。它连网关的
+WebSocket，不碰 DDS：手动遥控与 VLA 自主互斥，由网关做交接。协议、模式状态机和
+三条安全阀见 `docs/flutter-client.md`。
+
 ### 直接跑子命令
 
 ```sh
@@ -121,6 +132,9 @@ quadruped/
   cli/            main.py 子命令 · launcher.py 统一入口 · prompt.py 交互
   rl/             离线步态参数搜索（env.py / gait.py / search.py），不参与运行时
   sim/            run_sim.sh + patches/（仿真器本地改动的补丁与恢复步骤）
+  comm/           server.py 常驻服务端；gateway.py + 三个 host 是 App 那一侧
+                  （robot_link / vla_host / cam_host，各自管一个子进程）
+flutter-client/   Flutter 客户端（手机 / 桌面 / 网页）
 test/             自检与实验脚本，见下
 docs/             设计说明与图
 ```
@@ -218,4 +232,5 @@ MIT，见 `LICENSE`。第三方部分的例外见上一节。
 
 - `docs/go2-rl-guide.md` —— 为什么手写步态有天花板、训练环境为什么不接现有 DDS 链路
 - `docs/go2-controller-post.md` —— 控制器设计的长文
+- `docs/control-ownership.md` —— 谁能让狗动、谁能只看、每条边界的检查规则
 - `TODO.md` —— 施工顺序、验收判据、每条没做完的理由
