@@ -19,6 +19,13 @@
   #dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
   #dot.warn{background:var(--warn)}
   #dot.bad{background:var(--bad)}
+  nav{display:flex;gap:4px;margin:0 0 16px;border-bottom:1px solid var(--line)}
+  nav button{flex:1;padding:10px 0;border:none;background:none;color:var(--dim);
+             font-size:14px;cursor:pointer;border-bottom:2px solid transparent;
+             border-radius:0}
+  nav button.on{color:var(--fg);border-bottom-color:var(--accent)}
+  .tab{display:none}
+  .tab.on{display:block}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
         gap:10px;margin-bottom:16px}
   .cell{background:var(--panel);border:1px solid var(--line);border-radius:8px;
@@ -26,6 +33,7 @@
   .cell .k{color:var(--dim);font-size:12px;margin-bottom:4px}
   .cell .v{font-size:20px;font-variant-numeric:tabular-nums}
   .cell .v small{font-size:12px;color:var(--dim);margin-left:3px}
+  .cell .v.sm{font-size:14px;word-break:break-all}
   .bar{display:flex;gap:10px;margin-bottom:16px}
   button{flex:1;padding:13px 0;border-radius:8px;border:1px solid var(--line);
          background:var(--panel);color:var(--fg);font-size:15px;cursor:pointer}
@@ -37,6 +45,7 @@
       padding:10px 12px;margin:0;height:260px;overflow:auto;font-size:12px;
       line-height:1.55;color:#b9c2c9;white-space:pre-wrap;word-break:break-all}
   .note{color:var(--dim);font-size:12px;margin:0 0 14px}
+  .sect{color:var(--dim);font-size:12px;margin:18px 0 8px;letter-spacing:.3px}
   #ask{display:none;margin-bottom:14px}
   #ask input{width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);
              background:var(--panel);color:var(--fg)}
@@ -53,33 +62,128 @@
   #reply .it{color:var(--fg)}
   #reply .st{color:var(--dim);font-size:12px;margin-left:6px}
   #reply .wait{color:#c98a2b}
+
+  /* 列表：网络与蓝牙共用 */
+  .list{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+        overflow:hidden}
+  .item{display:flex;align-items:center;gap:10px;padding:11px 12px;
+        border-bottom:1px solid var(--line)}
+  .item:last-child{border-bottom:none}
+  .item .name{flex:1;min-width:0}
+  .item .name b{font-weight:500;display:block;overflow:hidden;
+                text-overflow:ellipsis;white-space:nowrap}
+  .item .name span{color:var(--dim);font-size:12px}
+  .item button{flex:0 0 auto;padding:7px 12px;font-size:13px;border-radius:6px}
+  .item button.go{border-color:#2b5d3f;color:#bfe8d1}
+  .item button.off{border-color:#5d2b2b;color:#e8c1c1}
+  .empty{color:var(--dim);font-size:13px;padding:14px 12px;text-align:center}
+  .bad-text{color:var(--bad)}
+  .ok-text{color:var(--ok)}
+  .warn-text{color:var(--warn)}
+  .sign{font-variant-numeric:tabular-nums;color:var(--dim);font-size:12px;
+        flex:0 0 46px;text-align:right}
+  .connect-row{display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);
+               background:#141a1e}
+  .connect-row input{flex:1;padding:9px 10px;border-radius:6px;
+                     border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+  .connect-row button{flex:0 0 auto;padding:9px 14px}
 </style>
 </head>
 <body>
 <h1><span id="dot"></span><span id="state">连接中…</span></h1>
-<p class="note">接管要求狗已经站着（官方运控站好再按）。停止会走收尾：蹲下 → 阻尼 → 交还 mcf。</p>
+
+<nav>
+  <button data-tab="ctl" class="on">控制</button>
+  <button data-tab="ovw">总览</button>
+  <button data-tab="net">网络</button>
+  <button data-tab="bt">蓝牙</button>
+</nav>
 
 <div id="ask"><input id="tok" placeholder="输入 token（启动日志里那 5 位）"></div>
 
-<div class="grid">
-  <div class="cell"><div class="k">策略回路</div><div class="v"><span id="hz">–</span><small>Hz</small></div></div>
-  <div class="cell"><div class="k">前进命令</div><div class="v" id="vx">–</div></div>
-  <div class="cell"><div class="k">前方</div><div class="v"><span id="gap">–</span><small>m</small></div></div>
-  <div class="cell"><div class="k">推理</div><div class="v"><span id="gen">–</span><small>s/次</small></div></div>
-  <div class="cell"><div class="k">位置 x / y</div><div class="v" id="pos">–</div></div>
-  <div class="cell"><div class="k">朝向</div><div class="v"><span id="yaw">–</span><small>°</small></div></div>
+<!-- ========== 控制 ========== -->
+<div class="tab on" id="tab-ctl">
+  <p class="note">接管要求狗已经站着（官方运控站好再按）。停止会走收尾：蹲下 → 阻尼 → 交还 mcf。</p>
+
+  <div class="grid">
+    <div class="cell"><div class="k">策略回路</div><div class="v"><span id="hz">–</span><small>Hz</small></div></div>
+    <div class="cell"><div class="k">前进命令</div><div class="v" id="vx">–</div></div>
+    <div class="cell"><div class="k">前方</div><div class="v"><span id="gap">–</span><small>m</small></div></div>
+    <div class="cell"><div class="k">推理</div><div class="v"><span id="gen">–</span><small>s/次</small></div></div>
+    <div class="cell"><div class="k">位置 x / y</div><div class="v" id="pos">–</div></div>
+    <div class="cell"><div class="k">朝向</div><div class="v"><span id="yaw">–</span><small>°</small></div></div>
+  </div>
+
+  <div class="bar">
+    <button id="go">接管</button>
+    <button id="halt">停止</button>
+  </div>
+
+  <img id="view" alt="机载画面与想法">
+  <input id="say" placeholder="对它说一句话（指令或闲聊，比如「往前走」「你看到什么」），回车发送">
+  <div id="reply"><div class="k">对话</div><div id="said">–</div></div>
+
+  <pre id="log">（还没有日志）</pre>
 </div>
 
-<div class="bar">
-  <button id="go">接管</button>
-  <button id="halt">停止</button>
+<!-- ========== 总览 ========== -->
+<div class="tab" id="tab-ovw">
+  <p class="note">扩展坞自身状态与到机器人的链路。每 3 秒刷新一次。</p>
+
+  <div class="grid">
+    <div class="cell"><div class="k">到机器人</div><div class="v" id="ov-link">–</div></div>
+    <div class="cell"><div class="k">运行时长</div><div class="v sm" id="ov-up">–</div></div>
+    <div class="cell"><div class="k">负载 (1 分钟)</div><div class="v" id="ov-load">–</div></div>
+    <div class="cell"><div class="k">内存占用</div><div class="v" id="ov-mem">–</div></div>
+    <div class="cell"><div class="k">磁盘占用</div><div class="v" id="ov-disk">–</div></div>
+    <div class="cell"><div class="k">最高温度</div><div class="v" id="ov-temp">–</div></div>
+  </div>
+
+  <div class="sect">设备</div>
+  <div class="list" id="ov-dev"></div>
+
+  <div class="sect">网口</div>
+  <div class="list" id="ov-if"></div>
+
+  <div class="sect">温度分区</div>
+  <div class="list" id="ov-therm"></div>
 </div>
 
-<img id="view" alt="机载画面与想法">
-<input id="say" placeholder="对它说一句话（指令或闲聊，比如「往前走」「你看到什么」），回车发送">
-<div id="reply"><div class="k">对话</div><div id="said">–</div></div>
+<!-- ========== 网络 ========== -->
+<div class="tab" id="tab-net">
+  <p class="note">无线网口由 NetworkManager 管。连上之后扩展坞就能脱离网线访问。</p>
 
-<pre id="log">（还没有日志）</pre>
+  <div class="sect">无线状态</div>
+  <div class="list" id="net-wifi"></div>
+
+  <div class="bar" style="margin-top:14px">
+    <button id="net-scan">扫描附近的 Wi-Fi</button>
+  </div>
+
+  <div class="sect">可连接的 Wi-Fi</div>
+  <div class="list" id="net-aps"><div class="empty">点上面的按钮扫一次</div></div>
+
+  <div class="sect">已保存的连接</div>
+  <div class="list" id="net-saved"></div>
+
+  <div class="sect">网口</div>
+  <div class="list" id="net-if"></div>
+</div>
+
+<!-- ========== 蓝牙 ========== -->
+<div class="tab" id="tab-bt">
+  <p class="note">扫描会阻塞 8 秒左右（bluetoothctl 的扫描窗口），期间这个页面别关。</p>
+
+  <div class="sect">适配器</div>
+  <div class="list" id="bt-ctl"></div>
+
+  <div class="bar" style="margin-top:14px">
+    <button id="bt-scan">扫描蓝牙设备</button>
+  </div>
+
+  <div class="sect">设备</div>
+  <div class="list" id="bt-dev"><div class="empty">点上面的按钮扫一次</div></div>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -99,8 +203,34 @@ function setDot(cls, text) {
   $("state").textContent = text;
 }
 
+function esc(s) {
+  return String(s).replace(/[&<>"]/g,
+    c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+}
+
+// -- 页签 --
+//
+// 只画当前这一个：画面和总览都在轮询，四个页签同时跑会把浏览器和扩展坞
+// 的连接堆满，而人一次只看一个。
+let curTab = "ctl";
+function showTab(name) {
+  curTab = name;
+  document.querySelectorAll("nav button").forEach(b =>
+    b.classList.toggle("on", b.dataset.tab === name));
+  document.querySelectorAll(".tab").forEach(t =>
+    t.classList.toggle("on", t.id === "tab-" + name));
+  if (name === "ovw") refreshOverview();
+  if (name === "net") refreshNet();
+  if (name === "bt") refreshBt();
+  if (name === "ctl") $("view").style.display = frameVer ? "block" : "none";
+}
+document.querySelectorAll("nav button").forEach(b =>
+  b.onclick = () => showTab(b.dataset.tab));
+
 const STATE_CN = {idle: "未接管", starting: "启动中…", running: "运行中",
                   stopping: "停止中（等收尾）", exited: "子进程已退出"};
+
+// -- 控制页 --
 
 // 画面：单独一条快循环，不跟指标走。
 //
@@ -110,7 +240,7 @@ const STATE_CN = {idle: "未接管", starting: "启动中…", running: "运行�
 let frameVer = 0, frameBusy = false, alive = false;
 
 async function frame() {
-  if (!alive || frameBusy) return;
+  if (!alive || frameBusy || curTab !== "ctl") return;
   try {
     const tick = await api("/api/tick");
     if (!tick.ts || tick.ts === frameVer) return;
@@ -134,7 +264,10 @@ async function poll() {
     $("gen").textContent = st.gen != null ? st.gen.toFixed(2) : "–";
     $("pos").textContent = st.x != null ? `${st.x.toFixed(1)} / ${st.y.toFixed(1)}` : "–";
     $("yaw").textContent = st.yaw != null ? st.yaw.toFixed(0) : "–";
-    $("go").disabled = s.alive;
+    $("go").disabled = s.alive || s.vla_available === false;
+    $("go").textContent = s.vla_available === false ? "接管（缺 DDS 依赖）" : "接管";
+    $("go").title = s.vla_available === false
+      ? "这台机器没装 unitree_sdk2py / cyclonedds，VLA 子进程起不来。总览、配网、蓝牙不受影响。" : "";
     $("halt").disabled = !s.alive;
     $("say").disabled = !s.alive;
     lastDialog = s.dialog || [];
@@ -201,11 +334,6 @@ $("say").onkeydown = async e => {
 // 通常不写 reply**（它只改命令），格子一动不动，人说第二句时看不到任何变化，
 // 就以为「发不出去了」。现在把「我说的」也列出来：`got` 由子进程打一行
 // `[L] 收到：` 确认 —— 看到「你：往前走」且没有「排队中」，就说明话进去了。
-function esc(s) {
-  return String(s).replace(/[&<>"]/g,
-    c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
-}
-
 let lastDialog = [], pendingSaid = [], dialogKey = "";
 
 function renderDialog() {
@@ -227,10 +355,210 @@ function renderDialog() {
 $("view").onload = () => { frameBusy = false; };
 $("view").onerror = () => { frameBusy = false; $("view").style.display = "none"; };
 
+// -- 总览 --
+//
+// 全部来自 /api/sys（读 /proc 和系统命令，毫秒级）。缺项显示「—」，
+// 不让某一块读不到就把整页打空。
+function row(k, v, cls = "") {
+  return `<div class="item"><div class="name"><b>${esc(k)}</b></div>
+          <div class="sign ${cls}" style="flex:0 0 auto">${esc(v)}</div></div>`;
+}
+
+async function refreshOverview() {
+  try {
+    const d = await api("/api/sys");
+    const r = d.robot || {};
+    $("ov-link").innerHTML = r.ok
+      ? `<span class="ok-text">通</span><small>${r.ms != null ? r.ms.toFixed(1) + " ms" : ""}</small>`
+      : `<span class="bad-text">断</span>`;
+    $("ov-up").textContent = d.uptime || "–";
+    $("ov-load").innerHTML = d.cpu && d.cpu.load1 != null
+      ? `${d.cpu.load1.toFixed(2)}<small>/ ${d.cpu.cores} 核</small>` : "–";
+    $("ov-mem").innerHTML = d.mem && d.mem.used_pct != null
+      ? `${d.mem.used_pct}<small>%</small>` : "–";
+    $("ov-disk").innerHTML = d.disk && d.disk.used_pct != null
+      ? `${d.disk.used_pct}<small>% 剩 ${d.disk.free_gb}G</small>` : "–";
+    $("ov-temp").innerHTML = d.thermal && d.thermal.max != null
+      ? `${d.thermal.max}<small>℃</small>` : "–";
+    $("ov-temp").className = "v " + (
+      d.thermal && d.thermal.max != null && d.thermal.max >= 85 ? "bad-text" : "");
+
+    $("ov-dev").innerHTML = [
+      row("型号", d.board || "–"),
+      row("主机名", d.host || "–"),
+      row("系统", d.os || "–"),
+      row("内核", d.kernel || "–"),
+      row("架构", d.arch || "–"),
+      row("Python", d.python || "–"),
+    ].join("");
+
+    $("ov-if").innerHTML = (d.ifaces && d.ifaces.length)
+      ? d.ifaces.map(i => row(i.name, `${i.state}${i.ipv4.length ? " · " + i.ipv4.join(", ") : ""}`)).join("")
+      : '<div class="empty">没有网口</div>';
+
+    $("ov-therm").innerHTML = (d.thermal && d.thermal.zones && d.thermal.zones.length)
+      ? d.thermal.zones.map(z => row(z.zone, `${z.c} ℃`)).join("")
+      : '<div class="empty">没有温度传感器</div>';
+  } catch (e) { /* 401 已提示 */ }
+}
+
+// -- 网络 --
+let netTimer = null;
+
+async function refreshNet() {
+  try {
+    const d = await api("/api/net");
+    const w = d.wifi || {};
+    $("net-wifi").innerHTML = w.present
+      ? row(w.device || "无线网口", `已就绪 · ${w.state || ""}`, "ok-text")
+      : `<div class="empty bad-text">${esc(w.reason || "没有无线网口")}</div>`;
+    $("net-if").innerHTML = (d.ifaces && d.ifaces.length)
+      ? d.ifaces.map(i => row(i.name, `${i.state}${i.ipv4.length ? " · " + i.ipv4.join(", ") : ""}`)).join("")
+      : '<div class="empty">没有网口</div>';
+    $("net-saved").innerHTML = (d.saved && d.saved.length)
+      ? d.saved.map(c => `<div class="item">
+          <div class="name"><b>${esc(c.name)}</b>
+            <span>${esc(c.type)} · ${esc(c.device || "—")} · ${esc(c.state)}</span></div>
+          <button class="off" onclick="forgetWifi('${esc(c.name).replace(/'/g, "\\'")}')">忘记</button>
+        </div>`).join("")
+      : '<div class="empty">没有已保存的连接</div>';
+  } catch (e) { /* 401 已提示 */ }
+}
+
+$("net-scan").onclick = async () => {
+  const btn = $("net-scan");
+  btn.disabled = true;
+  btn.textContent = "扫描中…";
+  try {
+    const r = await api("/api/net/scan");
+    if (!r.ok) {
+      $("net-aps").innerHTML = `<div class="empty bad-text">${esc(r.why || "扫描失败")}</div>`;
+      return;
+    }
+    $("net-aps").innerHTML = r.aps.length
+      ? r.aps.map(a => `<div class="item">
+          <div class="name"><b>${esc(a.ssid)}</b>
+            <span>${esc(a.security)}${a.active ? " · 已连上" : ""}</span></div>
+          <div class="sign">${a.signal}</div>
+          <button class="go" onclick="pickAp('${esc(a.ssid).replace(/'/g, "\\'")}')">连接</button>
+        </div>`).join("")
+      : '<div class="empty">周围没有扫到网络</div>';
+  } catch (e) {
+    $("net-aps").innerHTML = '<div class="empty bad-text">请求失败</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "扫描附近的 Wi-Fi";
+  }
+};
+
+// 点某个 SSID 就地展开一个密码框。
+//
+// 用 prompt() 更短，但密码会明文显示在一个系统弹窗里，而且手机浏览器对
+// prompt 的支持越来越差。就地展开还能同时显示「正在连」。
+function pickAp(ssid) {
+  const box = $("net-aps");
+  const old = document.getElementById("ap-form");
+  if (old) old.remove();
+  const form = document.createElement("div");
+  form.className = "connect-row";
+  form.id = "ap-form";
+  form.innerHTML = `<input id="ap-pwd" type="password" placeholder="密码（开放网络留空）">
+    <button class="go" id="ap-go">连接</button>`;
+  box.prepend(form);
+  const pwd = $("ap-pwd");
+  pwd.focus();
+  $("ap-go").onclick = async () => {
+    const btn = $("ap-go");
+    btn.disabled = true;
+    btn.textContent = "连接中…";
+    try {
+      const r = await api("/api/net/connect", "POST",
+        {ssid, password: pwd.value});
+      if (r.ok) {
+        form.innerHTML = `<span class="ok-text">已连上 ${esc(ssid)}</span>`;
+        setTimeout(() => { form.remove(); refreshNet(); }, 1200);
+      } else {
+        form.innerHTML = `<span class="bad-text">${esc(r.why || "连接失败")}</span>`;
+        setTimeout(() => form.remove(), 4000);
+      }
+    } catch (e) {
+      form.innerHTML = '<span class="bad-text">请求失败</span>';
+    }
+  };
+  pwd.onkeydown = e => { if (e.key === "Enter") $("ap-go").click(); };
+}
+
+async function forgetWifi(name) {
+  if (!confirm(`忘记「${name}」？下次不会再自动连。`)) return;
+  const r = await api("/api/net/forget", "POST", {name});
+  if (!r.ok) alert("没删掉：" + (r.why || "未知"));
+  refreshNet();
+}
+
+// -- 蓝牙 --
+async function refreshBt() {
+  try {
+    const d = await api("/api/bt");
+    const c = d.controller || {};
+    $("bt-ctl").innerHTML = c.present
+      ? row(c.name || "控制器", `${c.mac} · ${c.powered ? "已开启" : "未开启"}`,
+            c.powered ? "ok-text" : "warn-text")
+      : `<div class="empty bad-text">${esc(c.reason || "没有蓝牙控制器")}</div>`;
+    renderBtDevices(d.devices || []);
+  } catch (e) { /* 401 已提示 */ }
+}
+
+function renderBtDevices(devices) {
+  $("bt-dev").innerHTML = devices.length
+    ? devices.map(d => {
+        const state = d.connected ? "已连接" : (d.paired ? "已配对" : "未配对");
+        const cls = d.connected ? "ok-text" : (d.paired ? "" : "warn-text");
+        const btn = d.connected
+          ? `<button class="off" onclick="btDo('disconnect','${d.mac}')">断开</button>`
+          : `<button class="go" onclick="btDo('${d.paired ? "connect" : "pair"}','${d.mac}')">${d.paired ? "连接" : "配对"}</button>`;
+        return `<div class="item">
+          <div class="name"><b>${esc(d.name)}</b>
+            <span>${d.mac} · <span class="${cls}">${state}</span></span></div>
+          ${btn}
+        </div>`;
+      }).join("")
+    : '<div class="empty">没有设备</div>';
+}
+
+async function btDo(action, mac) {
+  try {
+    const r = await api("/api/bt", "POST", {action, mac});
+    if (!r.ok) alert((r.why || "操作失败"));
+    refreshBt();
+  } catch (e) { alert("请求失败"); }
+}
+
+$("bt-scan").onclick = async () => {
+  const btn = $("bt-scan");
+  btn.disabled = true;
+  btn.textContent = "扫描中（约 8 秒）…";
+  try {
+    const r = await api("/api/bt", "POST", {action: "scan", seconds: 8});
+    if (!r.ok) {
+      $("bt-dev").innerHTML = `<div class="empty bad-text">${esc(r.why || "扫描失败")}</div>`;
+      return;
+    }
+    renderBtDevices(r.devices || []);
+  } catch (e) {
+    $("bt-dev").innerHTML = '<div class="empty bad-text">请求失败</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "扫描蓝牙设备";
+  }
+};
+
+// -- 起轮询 --
 poll(); log(); frame();
 setInterval(poll, 1000);
 setInterval(log, 2000);
 setInterval(frame, 50);
+// 总览只在它那个页签可见时刷，省一次多余的 /proc 遍历。
+setInterval(() => { if (curTab === "ovw") refreshOverview(); }, 3000);
 </script>
 </body>
 </html>

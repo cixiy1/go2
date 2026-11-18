@@ -45,6 +45,10 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# 扩展坞自身的信息与网络/蓝牙运维。这个模块只用标准库和系统命令，
+# 没有 DDS 依赖 —— 配网、连蓝牙本来就是「还没接管机器人」时要做的事。
+from quadruped.web import sysinfo
+
 ROOT = Path(__file__).resolve().parents[2]
 PAGE = Path(__file__).resolve().parent / "page.html"
 
@@ -306,7 +310,8 @@ class Supervisor:
                    round(time.time() - self.started_at, 1),
                    log=str(self.log_path), last_line=self.last_line,
                    reply=self.reply, interactive=self.interactive,
-                   dialog=dialog, frame_ts=frame_ts)
+                   dialog=dialog, frame_ts=frame_ts,
+                   vla_available=vla_available())
         return out
 
 
@@ -386,6 +391,25 @@ class Handler(BaseHTTPRequestHandler):
                 lines = []
             self._json(200, {"lines": lines[-n:]})
             return
+        # 扩展坞总览：型号/内核/运行时长/负载/内存/磁盘/温度/网口/机器人连通性。
+        # 全部读 /proc 和系统命令，毫秒级，页面可以 2 秒刷一次。
+        if path == "/api/sys":
+            self._json(200, sysinfo.overview())
+            return
+        # 网络现状：网口 + 已保存的连接 + 有没有无线网口。
+        if path == "/api/net":
+            self._json(200, sysinfo.net_status())
+            return
+        # 扫 Wi-Fi。`--rescan yes` 会真扫一遍，3~8 秒 —— 页面是「点一下扫」，
+        # 不要放进轮询里，否则浏览器会堆一串没返回的请求。
+        if path == "/api/net/scan":
+            self._json(200, sysinfo.wifi_scan())
+            return
+        # 蓝牙：适配器 + 设备列表。设备列表要逐个 `info`，慢一点但只有几条。
+        if path == "/api/bt":
+            self._json(200, {"controller": sysinfo.bt_summary(),
+                             "devices": sysinfo.bt_devices()})
+            return
         self._json(404, {"ok": False, "why": "没有这个接口"})
 
     def do_POST(self) -> None:
@@ -401,6 +425,31 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/say":
             self._json(200, self.sup.say(self._read_text()))
+            return
+        # 连 Wi-Fi。参数走 JSON body：{"ssid": "...", "password": "...", "hidden": false}。
+        # 密码不进日志 —— 这个方法只把它转手给 nmcli。
+        if path == "/api/net/connect":
+            body = self._read_json()
+            self._json(200, sysinfo.wifi_connect(
+                str(body.get("ssid") or ""), str(body.get("password") or ""),
+                bool(body.get("hidden"))))
+            return
+        if path == "/api/net/forget":
+            self._json(200, sysinfo.wifi_forget(str(self._read_json().get("name") or "")))
+            return
+        # 蓝牙动作。`action=scan` 会阻塞几秒（bluetoothctl --timeout），
+        # 其余是 connect / disconnect / trust / pair / remove。
+        if path == "/api/bt":
+            body = self._read_json()
+            action = str(body.get("action") or "")
+            if action == "scan":
+                try:
+                    secs = float(body.get("seconds") or 8.0)
+                except (TypeError, ValueError):
+                    secs = 8.0
+                self._json(200, sysinfo.bt_scan(secs))
+            else:
+                self._json(200, sysinfo.bt_action(action, str(body.get("mac") or "")))
             return
         self._json(404, {"ok": False, "why": "没有这个接口"})
 
@@ -421,6 +470,25 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(obj, dict):
                 text = str(obj.get("text") or obj.get("say") or text)
         return text
+
+    # 读 JSON body。配网/蓝牙那几个接口用它（字段多，query 串塞不下）。
+    #
+    # 解析失败一律返回 {}，让调用方用 `or` 兜默认值并回 400 级的提示，
+    # 而不是在这里抛异常变成 500 —— 页面上只看到「连不上」，排查不了。
+    def _read_json(self) -> dict:
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0:
+            return {}
+        if n > 64 * 1024:                    # 这几个接口最大也就是 SSID + 密码
+            return {}
+        try:
+            obj = json.loads(self.rfile.read(n).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        return obj if isinstance(obj, dict) else {}
 
 
 # 拿锁。拿不到说明已经有一个在跑 —— 直接退出，不要起第二个。
@@ -453,6 +521,23 @@ def local_ip() -> str:
         return ip
     except OSError:
         return "127.0.0.1"
+
+
+# 这台机器能不能跑 VLA 子进程。
+#
+# 扩展坞上没有外网，装不了 cyclonedds / unitree_sdk2py。网页本身照样能用 ——
+# 总览、配网、蓝牙全是标准库和系统命令 —— 但「接管」按下去只会在日志里留一条
+# ImportError，人看到的是「点了没反应」。页面拿到这个字段就把按钮禁掉并把原因
+# 写在按钮上，比让人点完等三秒再失败好。
+def vla_available() -> bool:
+    from importlib.util import find_spec
+    for mod in ("unitree_sdk2py", "cyclonedds"):
+        try:
+            if find_spec(mod) is None:
+                return False
+        except (ImportError, ValueError):
+            return False
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
