@@ -13,14 +13,28 @@ set -eu
 
 SRC="${1:-/tmp/rtw88-master}"
 MOD=rtw_8822bu
+HERE="$(cd "$(dirname "$0")" && pwd)"
 
 [ "$(id -u)" = "0" ] || { echo "要用 root 跑：sudo $0 ${1:-}" >&2; exit 1; }
 
-if [ ! -f "$SRC/rtw_8822bu.ko" ]; then
-    echo "在 $SRC 里没找到 rtw_8822bu.ko。" >&2
+if [ ! -f "$SRC/rtw_8822bu.ko" ] && [ ! -f "$SRC/usb.c" ]; then
+    echo "在 $SRC 里既没有 rtw_8822bu.ko 也没有 usb.c。" >&2
     echo "先解包并编译：" >&2
     echo "  tar xzf /tmp/rtw88.tar.gz -C /tmp && cd /tmp/rtw88-master && make -j4" >&2
     exit 2
+fi
+
+# 关键补丁：关掉 RX DMA 聚合。不打的话连加密 5GHz 会整机 lockup（看门狗复位），
+# 详见 deploy/apply-rtw88-rxagg-patch.py 的文件头。幂等，打过了会跳过。
+if [ -f "$SRC/usb.c" ] && [ -f "$HERE/apply-rtw88-rxagg-patch.py" ]; then
+    echo "[*] 打 RX 聚合补丁"
+    python3 "$HERE/apply-rtw88-rxagg-patch.py" "$SRC"
+fi
+
+# 源码在、产物还没有（或者刚打过补丁），就地编译。
+if [ ! -f "$SRC/rtw_8822bu.ko" ]; then
+    echo "[*] make -j$(nproc)"
+    make -C "$SRC" -j"$(nproc)"
 fi
 
 # 编译产物和当前内核不匹配时装上去也加载不了，先说清楚，别让人对着
@@ -38,6 +52,18 @@ make install
 
 echo "[*] depmod"
 depmod -a
+
+# 三个稳定性参数。其中 disable_rx_agg 依赖上面打的补丁 —— 没打补丁就配这个，
+# modprobe 会报 unknown parameter，网卡直接起不来，所以先判断参数在不在。
+if [ -f "$HERE/rtw88-usb.conf" ]; then
+    echo "[*] 安装模块参数 /etc/modprobe.d/rtw88-usb.conf"
+    install -m 644 "$HERE/rtw88-usb.conf" /etc/modprobe.d/rtw88-usb.conf
+    if ! modinfo -p "$MOD" 2>/dev/null | grep -q disable_rx_agg \
+       && ! modinfo -p rtw_usb 2>/dev/null | grep -q disable_rx_agg; then
+        echo "    警告：模块里没有 disable_rx_agg 参数（补丁没生效？），" >&2
+        echo "    先去掉 conf 里 disable_rx_agg 那一行再重跑。" >&2
+    fi
+fi
 
 # 先卸掉可能存在的旧实例，再按原名加载。已经加过的不重复 modprobe。
 modprobe -r "$MOD" 2>/dev/null || true
