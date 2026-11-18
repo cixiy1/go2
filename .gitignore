@@ -23,6 +23,38 @@ __pycache__/
 # 阶段就 dlsym 失败，整个 utils.thread 导入不了，unitree_mujoco 的 bridge 起不来。
 # 不带上这份补丁，clone 下来在 macOS 上直接跑不了。内部 .git 已移除，纳入本仓库管理。
 #
-# 另外两个仍然忽略：体积大、没有本地改动、重新 clone 即可。
-/Yuki/
+# `Yuki/` 也进仓库（对话内核，原独立仓库 cixiy1/Yuki）：它是本项目的决策层，
+# 和机器人代码一起演进，分成两个仓库只会让「哪边的 spec 才是最新的」变成问题。
+# 内部 .git 已移除，历史仍在 https://github.com/cixiy1/Yuki。
+#
+# 只有这一个仍然忽略：410 MB（其中 unitree_robots 323 MB 是网格），
+# 没有本地改动，改动以 patches/unitree_mujoco.local.patch 形式存在。
 /quadruped/sim/unitree_mujoco/
+
+# ---- API key（不进仓库）----
+.deepseek.key
+
+# ---- 运行日志（每次跑都新写一份，不进仓库）----
+/logs/
+
+# ---- 演示录像 ----
+# 63 MB 的跑动/推理录像，本地留着看就够了。进仓库的代价是 .git 跟着翻倍，
+# 而且每次改一行代码都要连它一起拷贝 —— 结论性的图（docs/img/*.png|svg）才进。
+/docs/*.mp4
+
+# ---- MuJoCo 的运行残留 ----
+# 启动时写在仓库根，内容是引擎自己的告警，每次跑都变，提交它只会制造脏工作区。
+MUJOCO_LOG.TXT
+
+# ---- Flutter 遥控端：只收源码 ----
+# `build/` 499 MB（其中绝大部分是 macOS/Android 的构建产物），`pubspec.lock`
+# 反而要进 —— 遥控端只有一个应用，锁版本是为了「clone 下来行为一致」。
+/flutter-client/build/
+/flutter-client/.dart_tool/
+/flutter-client/.flutter-plugins
+/flutter-client/.flutter-plugins-dependencies
+/flutter-client/**/ephemeral/
+/flutter-client/**/Pods/
+/flutter-client/**/.symlinks/
+/flutter-client/*.iml
+
