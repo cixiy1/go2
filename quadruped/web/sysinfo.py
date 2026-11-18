@@ -23,6 +23,7 @@ import re
 import socket
 import subprocess
 import threading
+import time
 
 # 真机主控地址。整个项目里写死这一个值（见 `test/telemetry.py`）。
 ROBOT_IP = "192.168.123.161"
@@ -331,32 +332,66 @@ def _parse_aps(out: str) -> list[dict]:
     return aps
 
 
-# 扫一遍周围的 Wi-Fi。`--rescan yes` 会真的触发一次扫描，慢（3~8 秒，
-# rtw88 接口刚起来那次能到 15 秒），所以这个接口不适合轮询 ——
-# 页面上是「点一下扫」。
+# 读 NetworkManager 当前的 AP 列表（不触发扫描，只读它已有的结果）。
+def _list_aps(timeout: float = T_QUICK) -> list[dict]:
+    code, out, _ = _run(
+        ["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list"],
+        timeout=timeout)
+    return _parse_aps(out) if code == 0 else []
+
+
+# 触发一次真扫描（阻塞到扫完，11~15 秒）。只给后台线程用。
 #
-# 服务启动时先调一次 `wifi_warm()` 把这个贵操作挡在用户点击之前，
-# 之后页面上的每一次扫描都走 NetworkManager 的缓存（~0.05 秒）。
+# 必须互斥。页面每点一次「扫描」都会请求后台刷新，而用户等不及就会连点 ——
+# 没有锁的话几个 `nmcli --rescan yes` 会同时在跑（实测一次堆了 3 个），
+# 互相抢同一块网卡的 USB 通道。并发扫描正是把 rtw88 压到 lockup 的典型场景。
+_refresh_lock = threading.Lock()
+
+
+def _refresh_scan() -> None:
+    if not _refresh_lock.acquire(blocking=False):
+        return                                  # 已经有一个在扫，别叠加
+    try:
+        _run(["nmcli", "-t", "-f", "SSID", "dev", "wifi", "list", "--rescan", "yes"],
+             timeout=T_SCAN)
+    finally:
+        _refresh_lock.release()
+
+
+# 扫一遍周围的 Wi-Fi。
+#
+# 为什么不再用 `dev wifi list --rescan yes` 当主路径：它是同步等扫描完成，
+# 而 NetworkManager 在接口刚 up、或上一次操作还没收尾时会**静默忽略** rescan
+# 请求、直接返回一张空表。页面就表现成「点了没结果，得再点一次」。
+#
+# 现在的做法是缓存优先：
+#   - 缓存里有 AP  → 立刻返回，同时起一个后台线程真扫，下次点就是新的
+#   - 缓存是空的  → 才真正等（最多 T_SCAN 秒），这是服务刚起来时的情形
+#
+# 实测这块 RTL8822BU 每个信道停留约 1 秒，扫 11 个信道要 11.5 秒（`iw scan`
+# 直接扫也是这个数，所以跟 NetworkManager 无关，是驱动/固件的行为）。
 def wifi_scan() -> dict:
     wifi = wifi_device()
     if not wifi["present"]:
         return {"ok": False, "why": wifi.get("reason") or "没有无线网口", "aps": []}
-    code, out, err = _run(
-        ["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list",
-         "--rescan", "yes"], timeout=T_SCAN)
-    aps = _parse_aps(out) if code == 0 else []
+
+    aps = _list_aps()
+    if aps:
+        threading.Thread(target=_refresh_scan, name="wifi-rescan", daemon=True).start()
+        return {"ok": True, "aps": aps, "device": wifi["device"], "cached": True}
+
+    _run(["nmcli", "dev", "wifi", "rescan"], timeout=T_QUICK)
+    deadline = time.time() + T_SCAN
+    while time.time() < deadline:
+        aps = _list_aps()
+        if aps:
+            break
+        time.sleep(0.7)
+
     if not aps:
-        # 接口正忙（上一次连失败、或扫描被别的东西占用）时，`--rescan yes`
-        # 会安静地返回一张空表。这时候直接报「周围没有网络」是骗人 ——
-        # 再读一次缓存，只有缓存也空才这么说。
-        code2, out2, err2 = _run(
-            ["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list"],
-            timeout=T_QUICK)
-        if code2 == 0:
-            aps = _parse_aps(out2)
-        if not aps:
-            return {"ok": False, "aps": [],
-                    "why": (err or err2 or "扫描没有返回结果，接口可能正忙，再点一次").strip()[:160]}
+        return {"ok": False, "aps": [],
+                "why": f"扫了 {T_SCAN:.0f} 秒仍然没有结果。无线网卡可能卡住了，"
+                       f"刷新页面重试，或重启扩展坞"}
     return {"ok": True, "aps": aps, "device": wifi["device"]}
 
 
@@ -365,8 +400,7 @@ def wifi_scan() -> dict:
 def wifi_warm() -> None:
     if not wifi_device()["present"]:
         return
-    _run(["nmcli", "-t", "-f", "SSID", "dev", "wifi", "list", "--rescan", "yes"],
-         timeout=T_SCAN)
+    _refresh_scan()
 
 
 # 连一个 Wi-Fi。成功时 nmcli 会返回 0 并写出连接；失败原因（密码错、超时）
@@ -380,12 +414,20 @@ def wifi_connect(ssid: str, password: str = "", hidden: bool = False) -> dict:
     wifi = wifi_device()
     if not wifi["present"]:
         return {"ok": False, "why": wifi.get("reason") or "没有无线网口"}
-    cmd = ["nmcli", "dev", "wifi", "connect", ssid]
-    if password:
-        cmd += ["password", password]
-    if hidden:
-        cmd += ["hidden", "yes"]
-    code, out, err = _priv_bounded(cmd, T_CONNECT)
+    # 和后台扫描互斥：两个 nmcli 对着同一块网卡同时操作，比单扫更容易把
+    # USB 通道压死。扫完再连，别叠加。
+    if not _refresh_lock.acquire(blocking=False):
+        return {"ok": False,
+                "why": "正在扫描 Wi-Fi，等它扫完（约 15 秒）再点连接"}
+    try:
+        cmd = ["nmcli", "dev", "wifi", "connect", ssid]
+        if password:
+            cmd += ["password", password]
+        if hidden:
+            cmd += ["hidden", "yes"]
+        code, out, err = _priv_bounded(cmd, T_CONNECT)
+    finally:
+        _refresh_lock.release()
     if code == 0:
         return {"ok": True, "out": out.strip()[:200]}
     if code is None:

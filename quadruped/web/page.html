@@ -443,14 +443,19 @@ $("net-scan").onclick = async () => {
       $("net-aps").innerHTML = `<div class="empty bad-text">${esc(r.why || "扫描失败")}</div>`;
       return;
     }
-    $("net-aps").innerHTML = r.aps.length
+    // 缓存优先：后端有上一次的扫描结果就直接给，同时在后台重扫。
+    // 这块网卡真扫一遍要 11 秒，不能每次都让人干等。
+    const tip = r.cached
+      ? '<div class="empty">这是上一次的结果，正在后台刷新 —— 过几秒再点一次就是最新的</div>'
+      : "";
+    $("net-aps").innerHTML = tip + (r.aps.length
       ? r.aps.map(a => `<div class="item">
           <div class="name"><b>${esc(a.ssid)}</b>
             <span>${esc(a.security)}${a.active ? " · 已连上" : ""}</span></div>
           <div class="sign">${a.signal}</div>
           <button class="go" onclick="pickAp('${esc(a.ssid).replace(/'/g, "\\'")}', '${esc(a.security).replace(/'/g, "\\'")}')">连接</button>
         </div>`).join("")
-      : '<div class="empty">周围没有扫到网络</div>';
+      : '<div class="empty">周围没有扫到网络</div>');
   } catch (e) {
     $("net-aps").innerHTML = '<div class="empty bad-text">请求失败</div>';
   } finally {
