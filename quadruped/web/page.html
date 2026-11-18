@@ -451,7 +451,7 @@ $("net-scan").onclick = async () => {
     $("net-aps").innerHTML = tip + (r.aps.length
       ? r.aps.map(a => `<div class="item">
           <div class="name"><b>${esc(a.ssid)}</b>
-            <span>${esc(a.security)}${a.active ? " · 已连上" : ""}</span></div>
+            <span>${esc(a.security)}${a.bands && a.bands.length ? " · " + a.bands.join("/") : ""}${a.active ? " · 已连上" : ""}</span></div>
           <div class="sign">${a.signal}</div>
           <button class="go" onclick="pickAp('${esc(a.ssid).replace(/'/g, "\\'")}', '${esc(a.security).replace(/'/g, "\\'")}')">连接</button>
         </div>`).join("")

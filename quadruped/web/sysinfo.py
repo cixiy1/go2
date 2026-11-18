@@ -307,8 +307,17 @@ def net_status() -> dict:
     return {"ifaces": ifaces(), "wifi": wifi_device(), "saved": saved}
 
 
-# 解析 `nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY dev wifi list` 的输出。
-# 同一个 SSID 会有多条（2.4G / 5G 各一个 BSSID），只留信号最强的那条。
+# 从 `nmcli` 的 FREQ 字段（形如 `5745 MHz` / `2437 MHz`）判断频段。
+def _band_of(freq: str) -> str:
+    m = re.search(r"(\d+)", freq or "")
+    if not m:
+        return ""
+    return "5G" if int(m.group(1)) >= 4000 else "2.4G"
+
+
+# 解析 `nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY,FREQ dev wifi list` 的输出。
+# 同一个 SSID 会有多条（2.4G / 5G 各一个 BSSID），只留信号最强的那条，
+# 但把出现过的频段都记下来 —— 页面要显示这个，否则分不清连的是 2.4G 还是 5G。
 def _parse_aps(out: str) -> list[dict]:
     seen, aps = {}, []
     for line in out.splitlines():
@@ -316,19 +325,24 @@ def _parse_aps(out: str) -> list[dict]:
         if len(f) < 4:
             continue
         in_use, ssid, signal, sec = f[0], f[1], f[2], f[3]
+        freq = f[4] if len(f) > 4 else ""
         if not ssid:
             continue
         try:
             sig = int(signal)
         except ValueError:
             sig = 0
+        band = _band_of(freq)
         old = seen.get(ssid)
         if old is not None:
             old["signal"] = max(old["signal"], sig)
+            if band and band not in old["bands"]:
+                old["bands"].append(band)
             old["active"] = old["active"] or in_use.strip() == "*"
             continue
         item = {"ssid": ssid, "signal": sig, "security": sec or "开放",
-                "active": in_use.strip() == "*"}
+                "active": in_use.strip() == "*",
+                "bands": [band] if band else []}
         seen[ssid] = item
         aps.append(item)
     aps.sort(key=lambda a: -a["signal"])
@@ -338,7 +352,7 @@ def _parse_aps(out: str) -> list[dict]:
 # 读 NetworkManager 当前的 AP 列表（不触发扫描，只读它已有的结果）。
 def _list_aps(timeout: float = T_QUICK) -> list[dict]:
     code, out, _ = _run(
-        ["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list"],
+        ["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY,FREQ", "dev", "wifi", "list"],
         timeout=timeout)
     return _parse_aps(out) if code == 0 else []
 
@@ -427,13 +441,13 @@ def _wifi_link() -> tuple[str, str]:
 #    nmconnection，下次启动 NetworkManager 直接报 invalid connection —— 实测
 #    已经攒了 3 个，全是 Yukiho 的。显式建 profile 在连接之前就把文件写完整。
 #
-# 2. 两个参数是针对这台机器实测出来的：
-#      wifi-sec.key-mgmt wpa-psk
-#        避开 WPA3 的 SAE 握手。连开放的 gdmec（无握手）三次全成功；连
-#        Yukiho（WPA2/WPA3 混合）直接锁死。差别就在握手那一下的 USB 事务量。
-#      wifi.band bg
-#        只用 2.4G。5G 的 VHT 高吞吐会放大 USB 传输，而扩展坞只是遥控用，
-#        2.4G 完全够。
+# 2. 强制 `wifi-sec.key-mgmt wpa-psk`，避开 WPA3 的 SAE 握手。连开放的 gdmec
+#    （无握手）3 次全成功，连 Yukiho（WPA2/WPA3 混合）直接锁死 —— 差别就在
+#    握手那一下的 USB 事务量。
+#
+#    注意：这里**不设 wifi.band**。一开始试过强制 2.4G（想降 USB 吞吐），
+#    结果 Yukiho 只有 5G（5745 MHz / 信道 149），设成 bg 之后永远关联不上，
+#    页面就卡在「连接中」。频段交给 NetworkManager 选。
 def wifi_connect(ssid: str, password: str = "", hidden: bool = False) -> dict:
     ssid = (ssid or "").strip()
     if not ssid:
@@ -464,12 +478,12 @@ def wifi_connect(ssid: str, password: str = "", hidden: bool = False) -> dict:
         if code != 0:
             return {"ok": False, "why": f"建连接失败：{(err or out).strip()[:160]}"}
 
-        mod = ["sudo", "-n", "nmcli", "con", "mod", ssid, "wifi.band", "bg"]
         if password:
-            mod += ["wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password]
-        code, out, err = _run(mod, timeout=T_SETUP)
-        if code != 0:
-            return {"ok": False, "why": f"设参数失败：{(err or out).strip()[:160]}"}
+            mod = ["sudo", "-n", "nmcli", "con", "mod", ssid,
+                   "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password]
+            code, out, err = _run(mod, timeout=T_SETUP)
+            if code != 0:
+                return {"ok": False, "why": f"设参数失败：{(err or out).strip()[:160]}"}
 
         code, out, err = _priv_bounded(["nmcli", "--wait", "20", "con", "up", ssid], T_CONNECT)
     finally:
