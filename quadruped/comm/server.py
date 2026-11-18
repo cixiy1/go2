@@ -70,6 +70,9 @@ class RobotService:
         self.last_cmd = time.monotonic()
         self._in_call = False
         self._closed = False
+        # 由 main 填：本端点可选的控制端。网关据此告诉 App「哪个能点」，
+        # 免得 App 自己抄一份 CLIENTS 表然后和 body.py 漂移。
+        self.clients: tuple[str, ...] = ()
         self._watchdog_stop = threading.Event()
 
     # -- 生命周期 --------------------------------------------------------
@@ -177,8 +180,19 @@ class RobotService:
         return ok(req_id, _plain(data))
 
     # 机器人返回码非 0 就抛。原生语义：0 成功，4xxx 是具体失败原因。
+    #
+    # 两个后端两种返回：官方 / 自研给的是原生返回码（int），推理控制端给的是
+    # `MotionService.set_velocity` 的状态 dict。原来这里一律 `int(code)`，在推理
+    # 控制端上每条 move 都抛 `TypeError: int() argument must be ... not 'dict'`，
+    # 现象是「一切到推理控制端，摇杆就一点反应都没有」，而 App 上只看得到一句
+    # 500。dict 的失败信号在 `error` 字段里。
     @staticmethod
     def _check(code, what: str) -> None:
+        if isinstance(code, dict):
+            err = code.get("error")
+            if err:
+                raise CommandFailed(503, f"{what} 失败：{err}")
+            return
         if int(code) != 0:
             raise CommandFailed(int(code), f"{what} 返回 {code}")
 
@@ -188,7 +202,14 @@ class RobotService:
         return {"pong": True, "uptime_s": round(time.monotonic() - self.started, 1)}
 
     def _cmd_status(self, args):
-        data = {"target": self.b.target, "moving": self.moving}
+        data = {
+            "target": self.b.target,
+            "moving": self.moving,
+            # 当前生效的控制端。App 靠它显示「实际在用哪个」，而不是显示自己
+            # 请求过的那个 —— 两者不一致时（比如 attach 到别人起的服务端）要看得出来。
+            "client": getattr(self.b, "kind", ""),
+            "clients": list(self.clients),
+        }
         try:
             data["pos"] = [round(float(v), 4) for v in self.b.pos]
             data["rpy"] = [round(float(v), 4) for v in self.b.rpy]
@@ -365,13 +386,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
-    from quadruped.control.virtual.robot import connect, resolve_endpoint
+    from quadruped.control.virtual.robot import (
+        clients_for, connect, default_client, resolve_endpoint,
+    )
 
     args = build_parser().parse_args(argv)
 
     # 服务端不弹菜单：它是被脚本/系统拉起来的，stdin 可能是空的。
     ep = resolve_endpoint(args.preset, iface=args.iface, domain=args.domain)
-    kind = args.client or "ours"
+    # 不指定控制端时跟交互菜单同一个默认值：仿真 policy、真机 official。
+    # 网关拉起服务端时不会传 --client，所以这里才是遥控真正走哪条步态的地方。
+    kind = args.client or default_client(ep.preset)
     print(f"端点 {ep.label} / 控制端 {kind}", flush=True)
     try:
         backend = connect(ep, kind, kp=args.kp, kd=args.kd, tau=args.tau)
@@ -382,7 +407,23 @@ def main(argv=None) -> int:
     print(f"步态 {backend.loco_gait}（`gait` 命令可切换）", flush=True)
 
     svc = RobotService(backend, idle_stop=args.idle_stop, verbose=not args.quiet)
-    if not svc.ensure_standing():
+    svc.clients = clients_for(ep.preset)
+    # 推理控制端要先接管：`PolicyBackend.start()` 里是「摆到策略站姿 1.5 s +
+    # 起 50 Hz 线程 + 原地热身 1.5 s」，一共三秒多。如果留到第一条 `move` 才做，
+    # 网关那条调用（timeout=2.0）必然超时，而超时会让一问一答的会话错位一格，
+    # 之后每条命令都读到上一条的响应 —— 现象是「切到推理控制端，摇杆一点反应
+    # 都没有」。提前接管，第一条速度指令就是即时返回的。
+    #
+    # 也因为它测不到机身高度（策略只发关节指令，没有本体状态），这里不能走
+    # `ensure_standing()`；`start()` 自己会在倾角超过 45° 时拒绝，等价的那道闸。
+    if backend.kind == "policy":
+        try:
+            backend.start()
+            print("推理控制端已接管（站姿 + 热身完成）", flush=True)
+        except Exception as err:                           # noqa: BLE001
+            print(f"推理控制端接管失败：{err}", file=sys.stderr)
+            return 1
+    elif not svc.ensure_standing():
         print("警告：没能站到标称高度，第一条动作会从当前姿态起步", file=sys.stderr)
     install_signals(svc)
     listener = listen(args)

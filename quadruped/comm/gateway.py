@@ -74,6 +74,7 @@ from pathlib import Path
 from quadruped.limits import CROUCH_MAX, CROUCH_MIN, VX_MAX, VY_MAX, VYAW_MAX
 from quadruped.comm import ws
 from quadruped.comm.cam_host import CamHost
+from quadruped.comm.client import RobotError
 from quadruped.comm.protocol import DEFAULT_PORT, DEFAULT_SOCKET
 from quadruped.comm.robot_link import POLL_HZ, RobotLink
 from quadruped.comm.vla_host import VlaHost
@@ -108,6 +109,17 @@ LOCK = Path("/tmp/go2-gateway.lock")
 # 两者都是相机图，但前者叠了想法字幕和视野条，拿它当「实景」判断会误读。
 FRAME_VLA = 1
 FRAME_CAM = 2
+
+# 高层控制端的名字。这三个字符串是「参数形状」，不是「这个端点能不能用」——
+# 能不能用由服务端 `status` 里的 `clients` 回报（仿真只有 ours/policy，真机三个都有）。
+# 两份不合并的原因：这一层不许 import 控制栈（arch_check 规则 2），而
+# `CLIENTS` 表在 `robot/body.py` 里，import 它等于把 SDK 拖进通讯层。
+CONTROLLERS = ("official", "ours", "policy")
+CONTROLLER_LABEL = {
+    "official": "官方控制器",
+    "ours": "自研控制器",
+    "policy": "推理模型控制器",
+}
 
 # 允许 App 直接转发的命令。`forward` / `turn` / `park` 故意不在里面：
 # 前两个是阻塞调用（几秒），会把状态轮询卡住；`park` 会关掉服务端，那是
@@ -167,8 +179,9 @@ class Gateway:
 
     def __init__(self, *, host: str, port: int, token: str, socket_path: str,
                  preset: str, robot_manage: str, host_flag: str | None,
+                 client: str | None = None,
                  events_port: int = 0, camera: bool = True,
-                 verbose: bool = True):
+                 cam_hz: float = 30.0, verbose: bool = True):
         self.host = host
         self.port = port
         self.token = token
@@ -187,7 +200,7 @@ class Gateway:
         self.robot: RobotLink | None = None
         self._robot_args = dict(socket_path=socket_path, host=host_flag,
                                 port=DEFAULT_PORT, preset=preset,
-                                manage=robot_manage, echo=verbose)
+                                manage=robot_manage, client=client, echo=verbose)
         # VLA 事件从 UDP 进来，端口由内核分配，再告诉子进程。
         self._udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # 端口给 0 由内核分配（默认）。给固定端口是为了让「VLA 跑在另一台机器
@@ -200,7 +213,7 @@ class Gateway:
                            echo=verbose)
         # 手动模式下的相机馈送。VLA 在跑时不用它 —— 那一侧自己就在取相机。
         self.camera = bool(camera)
-        self.cam = CamHost(preset=preset, echo=verbose)
+        self.cam = CamHost(preset=preset, hz=cam_hz, echo=verbose)
         self.vla_event: dict = {}
         self.vla_replies: deque[dict] = deque(maxlen=40)
         self._jobs: queue.Queue = queue.Queue()
@@ -254,6 +267,9 @@ class Gateway:
                 "preset": None if robot is None else robot.preset,
                 "target": rs.get("target"),
                 "rtt_ms": None if robot is None else robot.rtt_ms,
+                # 实际生效的控制端（服务端说的）与这个端点可选的列表。
+                "controller": None if robot is None else robot.controller,
+                "available": [] if robot is None else robot.available,
             },
             "robot": {
                 "pos": rs.get("pos"),
@@ -408,22 +424,26 @@ class Gateway:
             self.mode = "switching"
             self.mode_note = f"切到{'手动' if target == 'manual' else 'VLA'}…"
         self._stop_motion()
-        self._jobs.put(target)
+        self._jobs.put(("mode", target))
         return {"ok": True, "switching": True, "target": target}
 
     def _job_loop(self) -> None:
         while not self.stopped.is_set():
             try:
-                target = self._jobs.get(timeout=0.5)
+                work = self._jobs.get(timeout=0.5)
             except queue.Empty:
                 continue
             try:
-                if target == "manual":
-                    self._switch_manual()
-                elif target == "vla":
-                    self._switch_vla()
+                action, arg = work
+                if action == "mode":
+                    if arg == "manual":
+                        self._switch_manual()
+                    elif arg == "vla":
+                        self._switch_vla()
+                    else:
+                        self._switch_off()
                 else:
-                    self._switch_off()
+                    self._switch_controller(arg)
             except Exception as err:                       # noqa: BLE001
                 with self._lock:
                     self.mode = "off"
@@ -469,6 +489,55 @@ class Gateway:
             self.mode = "vla"
             self.mode_note = ""
         self._event("mode", "VLA 已启动，自主接管" if out.get("ok") else "VLA 起不来")
+
+    # 切控制端。先过四道守卫，再排进作业队列（重启服务端要几秒）。
+    #
+    # 只在手动模式下允许：VLA 自己就是控制端的一种，切它没意义；off 模式下
+    # 没有服务端可重启。
+    def request_controller(self, kind: str) -> dict:
+        if kind not in CONTROLLERS:
+            return {"ok": False, "code": 400,
+                    "msg": f"没有这个控制端：{kind}，可选 {'/'.join(CONTROLLERS)}"}
+        with self._lock:
+            mode = self.mode
+        if mode != "manual":
+            return {"ok": False, "code": 409,
+                    "msg": f"当前是 {mode} 模式；切控制端要先切到手动遥控"}
+        robot = self.robot
+        if robot is None:
+            return {"ok": False, "code": 503, "msg": "还没连上机器人"}
+        if not robot.owns_server:
+            return {"ok": False, "code": 409,
+                    "msg": "服务端是你自己起的（--robot attach），换控制端要用它自己的 "
+                           f"--client 重启。当前：{robot.controller or '未知'}"}
+        allowed = robot.available
+        if allowed and kind not in allowed:
+            names = " / ".join(CONTROLLER_LABEL.get(k, k) for k in allowed)
+            return {"ok": False, "code": 400,
+                    "msg": f"这个端点只能用{names}"}
+        if robot.controller == kind:
+            return {"ok": True, "controller": kind, "already": True}
+        # 换控制端要重启服务端：先停步、收回操作权。操作权不保留 —— 链路会断，
+        # 保留一个「名义上还持有」的租约比收回更危险。
+        self._stop_motion()
+        self._drop_lease("切换控制端，操作权已收回")
+        with self._lock:
+            self.mode_note = f"正在切到{CONTROLLER_LABEL.get(kind, kind)}…"
+        self._jobs.put(("controller", kind))
+        return {"ok": True, "switching": True, "controller": kind}
+
+    def _switch_controller(self, kind: str) -> None:
+        robot = self.robot
+        if robot is None:
+            raise RuntimeError("机器人链路已经不在了")
+        label = CONTROLLER_LABEL.get(kind, kind)
+        self._event("mode", f"正在切换到{label}（服务端要重启，狗会先蹲下）")
+        robot.restart(kind)
+        with self._lock:
+            self.mode_note = ""
+        # 重启之后服务端会自己做 BalanceStand，但腿还在抬；这里不假装知道高度，
+        # 让状态帧如实反映服务端报的值。
+        self._event("mode", f"控制端已切到{label}")
 
     def _switch_off(self) -> None:
         self.cam.stop()
@@ -525,7 +594,10 @@ class Gateway:
     # VLA 那张带字幕的合成图就是机载实景。
     def _camera_loop(self) -> None:
         while not self.stopped.is_set():
-            time.sleep(0.15)
+            # 4 ms 一次 stat：转发延迟直接决定「画面看起来跟不跟手」。
+            # 原来睡 0.15 s，光这一层就把帧率封在 6.6 Hz —— 60 fps 的源也只剩 6 帧。
+            # 一次 stat 是微秒级的，200 Hz 轮询的代价可以忽略。
+            time.sleep(0.004)
             if not self.camera:
                 continue
             if self.vla.running:
@@ -663,6 +735,9 @@ class Gateway:
             data = robot.call(cmd, **(msg.get("args") or {}))
             return {"ok": True, "data": data}
 
+        if op == "controller":
+            return self.request_controller(str(msg.get("kind") or ""))
+
         if op == "mode":
             target = str(msg.get("mode") or "")
             return self.request_mode(target)
@@ -679,7 +754,7 @@ class Gateway:
                 with self._lock:
                     self.mode = "switching"
                     self.mode_note = "正在停止 VLA…"
-                self._jobs.put("off")
+                self._jobs.put(("mode", "off"))
                 return {"ok": True, "stopping": True}
             return {"ok": False, "code": 400, "msg": "action 只能是 start/stop"}
 
@@ -839,9 +914,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="机器人服务端的 Unix 套接字路径")
     ap.add_argument("--preset", choices=("sim", "real"), default="sim",
                     help="仿真还是真机。网关自己要起服务端 / VLA 时用这个")
+    ap.add_argument("--client", choices=CONTROLLERS, default=None,
+                    help="高层控制端。不给：仿真 ours、真机 official（服务端自己挑）")
     ap.add_argument("--robot", choices=("auto", "attach", "spawn"), default="auto",
                     help="auto=有服务端就连、没有就起；attach=只连不起；"
                          "spawn=总是自己起一个")
+    ap.add_argument("--cam-hz", type=float, default=30.0,
+                    help="相机馈送出图频率（1~60）。仿真那边要同步：SIM_VIDEO_HZ")
     ap.add_argument("--events-port", type=int, default=0,
                     help="VLA 事件（UDP）的固定端口，默认由内核分配")
     ap.add_argument("--no-camera", action="store_true", help="不转发 VLA 画面")
@@ -881,9 +960,11 @@ def main(argv: list[str] | None = None) -> int:
 
     gw = Gateway(host=args.host, port=args.port, token=token,
                  socket_path=args.socket, preset=args.preset,
-                 robot_manage=args.robot, host_flag=None,
+                 robot_manage=args.robot, host_flag=None, client=args.client,
                  events_port=args.events_port,
-                 camera=not args.no_camera, verbose=not args.quiet)
+                 camera=not args.no_camera,
+                 cam_hz=max(1.0, min(60.0, args.cam_hz)),
+                 verbose=not args.quiet)
 
     def stop(signum, frame):                        # noqa: ARG001
         gw.stopped.set()

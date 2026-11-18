@@ -123,10 +123,17 @@ class RobotClient:
             self._sock.sendall(encode({"id": req_id, "cmd": cmd, "args": args}))
             line = self._read_line()
         except TimeoutError:
+            # 超时后必须把连接扔掉。这条会话是「一问一答」：迟到的那个响应还
+            # 躺在套接字里，下一次请求的 `_read_line` 会把它当成自己的 —— 之后
+            # 每一条命令都错开一格，返回的是上一条的数据，或者干脆不是合法 JSON。
+            # 现象是「某一次动作超时之后，狗就再也不听指令了」，而日志里只有一条
+            # 超时。断掉重连是唯一可靠的恢复方式：下一次 `call` 会重新 `connect`。
+            self.close()
             raise RobotError(504, f"{cmd} 等待响应超时（{timeout or self.timeout:.0f}s）"
                                   "；长动作要给更长的 timeout") from None
         finally:
-            if timeout is not None:
+            # 超时分支已经把连接关掉了（见上面），`_sock` 会是 None。
+            if timeout is not None and self._sock is not None:
                 self._sock.settimeout(self.timeout)
 
         try:

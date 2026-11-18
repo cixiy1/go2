@@ -251,6 +251,16 @@ def choose_endpoint(preset=None, *, iface=None, domain=None) -> Endpoint:
     return resolve_endpoint(preset, iface=iface, domain=domain)
 
 
+# 这个环境不指定时用哪个控制端。交互菜单的默认项和服务端（网关拉起的）
+# 用的是同一个值 —— 两处各写一份的话，会出现「菜单回车走了 policy，网关起的
+# 服务端却是 ours」这种查半天的问题。
+#
+# 仿真是 policy：自研 mech 步态在 kp20/kd0.5 下 4% 跟踪率（见下）；
+# 真机是 official：原生运控最稳，推理那边没有起立/蹲下/跳跃。
+def default_client(preset: str) -> str:
+    return "policy" if preset == "sim" else "official"
+
+
 # 定下用哪个控制端。`want` 给了就校验，没给就问一句。
 #
 # 只有一个候选时也停下来问：让人看清自己连的是哪个控制器，回车即可，
@@ -275,7 +285,12 @@ def choose_client(endpoint: Endpoint, want: str | None = None) -> str:
         print("  仿真桥只有 rt/lowcmd 和 rt/sportmodestate，没有运动服务，"
               "官方控制器在这边连不上。")
 
-    default = "ours" if endpoint.sim else "official"
+    # 仿真默认走推理控制端，不是自研。实测（2026-11-18，`--preset sim`，同一套
+    # 仿真桥）：自研的 mech 步态在 kp20/kd0.5 下指令 0.8 m/s 只走 0.034 m/s，
+    # 跟踪率 4% —— 遥控起来就是「非常慢」；推理控制端同一指令到 0.24~0.45 m/s，
+    # 而且它就是 VLA 在用的那条步态。真机仍是官方控制器：原生运控最稳，推理
+    # 那边没有起立/蹲下/跳跃。
+    default = default_client(endpoint.preset)
     n = _pick(list(options),
               default_no=options.index(default) + 1,
               prompt=(f"  选择 1-{len(options)}，回车 = {options.index(default) + 1}："
@@ -316,4 +331,5 @@ def add_endpoint_args(parser) -> None:
     g.add_argument("--domain", type=int, default=None,
                    help="直接指定 DDS 域号，最高优先级")
     g.add_argument("--client", choices=tuple(CLIENT_NAMES), default=None,
-                   help="跳过询问，直接用指定控制端（仿真只有 ours 可用）")
+                   help="跳过询问，直接用指定控制端（仿真 ours/policy，"
+                        "真机 official/ours/policy；默认仿真 policy、真机 official）")
