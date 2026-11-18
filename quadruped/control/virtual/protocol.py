@@ -31,7 +31,11 @@
 from typing import Protocol, runtime_checkable
 
 #: 认得的 META 字段。多写的键不会报错，但不会被用到 —— 需要新字段时两边一起改。
-META_KEYS = ("title", "desc", "group", "owns_cmd", "owns_keys")
+#:
+#: `client` 是「这个控制器走哪个控制端」，取值同启动器的 CLIENTS（policy / ours /
+#: official）。声明了启动器就按它写摘要，不按环境猜 —— VLA 走策略网络、不建
+#: `Go2Controller`，猜成「自研」会让摘要写着「运控 mpc」而实际没开。
+META_KEYS = ("title", "desc", "group", "owns_cmd", "owns_keys", "client")
 
 #: 必填字段。`title` 缺了菜单里没法显示，直接算错。
 REQUIRED_KEYS = ("title",)
@@ -110,6 +114,10 @@ def normalize_meta(meta, group: str, stem: str) -> dict:
         owns_cmd=bool(meta.get("owns_cmd", False)),
         owns_keys=bool(meta.get("owns_keys", False)),
     )
+    # 声明了才带上，没声明就别造一个 None 出来 —— 启动器用 `in (None, "__none__")`
+    # 判断「按环境猜」，多一个显式的 None 不会出错，但少一个键更好读。
+    if meta.get("client"):
+        clean["client"] = str(meta["client"])
     unknown = sorted(set(meta) - set(META_KEYS))
     if unknown:
         # 不报错，但把名字记下来，写错键名（比如 own_cmd）时不至于毫无反应。

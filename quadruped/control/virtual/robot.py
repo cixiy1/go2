@@ -11,6 +11,22 @@
 控制器不 import `Go2Robot`、不 import `unitree_sdk2py`、不知道域号怎么定，
 也不知道「lo0 是仿真」这件事从哪读来。
 
+## 谁从这里进
+
+    仓库内、Yuki 的常驻宿主    直接 connect()，拿 Backend 调
+    短命进程、仓库外的项目     不进来，走 quadruped/comm 的套接字协议
+
+判据是「这个进程能不能常驻」，不是「是不是自己人」。`ChannelFactoryInitialize`
+一进程一次、`rt/lowcmd` 同时只有一个发送者：短命进程持 `Backend`，调用结束进程退出，
+指令就断在那里。
+
+两条路的差别还在调用成本：`connect()` 返回的 `Backend` 和控制器是同一个进程里的
+同一个对象，`pos / rpy / height` 是直接读；通讯层每次要序列化一次、往返一次。
+高频逻辑走后者，等于自愿加一层延迟。
+
+反过来，外部项目不该被 `quadruped` 的依赖拖着走 —— `import quadruped.comm.client`
+只需要标准库。内部谁 import 了通讯层，`test/arch_check.py` 会判失败。
+
 ## 为什么端点解析必须放在这一层
 
 「回环口 = 仿真、en5 = 真机、域号 1 还是 0、仿真器的配置改过没有」这些事实
@@ -34,12 +50,13 @@ from typing import Protocol, runtime_checkable
 from quadruped.robot.body import Go2Robot
 
 #: 控制端名字。菜单和错误消息共用，别在控制器里另写一份。
-CLIENT_NAMES = {"official": "官方控制器", "ours": "自研控制器"}
+CLIENT_NAMES = {"official": "官方控制器", "ours": "自研控制器", "policy": "推理模型控制器"}
 
 #: 菜单里给每个控制端的一行说明。
 CLIENT_DESC = {
-    "official": "官方控制器    SportClient —— 真机上的原生运动服务",
-    "ours": "自研控制器    HighLevelController —— 本仓库实现",
+    "official": "官方控制器      SportClient —— 真机上的原生运动服务",
+    "ours": "自研控制器      HighLevelController —— 本仓库实现",
+    "policy": "推理模型控制器  步态策略 —— 直连 rt/lowcmd，不带高层动作",
 }
 
 
@@ -94,12 +111,38 @@ class Backend(Protocol):
     def loop_text(self) -> str: ...
 
     def jump(self) -> int: ...
-    def crouch(self) -> int: ...
+    def crouch(self, depth: float = 0.08) -> int: ...
     def uncrouch(self) -> int: ...
     def stand(self) -> int: ...
     def stop_motion(self) -> int: ...
     def freeze(self) -> int: ...
     def close(self) -> None: ...
+
+    # 速度指令，两份控制器都有。
+    def move(self, vx: float = 0.0, vy: float = 0.0, vyaw: float = 0.0) -> int: ...
+
+    # 闭环任务，只有自研控制端实现。官方后端调到这里抛 NotImplementedError，
+    # 上层据此判能力，别用 hasattr 猜。
+    def forward(self, distance: float, vx: float = 0.3,
+                tol: float = 0.08) -> dict: ...
+
+    def turn(self, degrees: float, yaw_rate: float = 0.5,
+             tol: float = 0.1745) -> dict: ...
+
+    def set_gait_style(self, style: str) -> str: ...
+
+    # 关节直通：12 个目标角 + PD 增益，绕过步态直接下发电机。
+    # 只有自研后端有（官方原生服务不开放 rt/lowcmd）。
+    def joint_target(self, q, *, kp=None, kd=None, tau=None) -> int: ...
+
+    # 力矩直通：12 个力矩，kp / kd 置 0。同样只有自研后端有。
+    def joint_torque(self, tau) -> int: ...
+
+    @property
+    def q(self): ...
+
+    @property
+    def dq(self): ...
 
 
 # ---- 事实：网卡与端点 ------------------------------------------------------
@@ -228,9 +271,9 @@ def choose_client(endpoint: Endpoint, want: str | None = None) -> str:
     print("\n控制端：")
     for i, kind in enumerate(options, 1):
         print(f"  {i}) {CLIENT_DESC[kind]}")
-    if len(options) == 1 and endpoint.sim:
+    if endpoint.sim:
         print("  仿真桥只有 rt/lowcmd 和 rt/sportmodestate，没有运动服务，"
-              "官方控制器在这边连不上，所以只给这一个。")
+              "官方控制器在这边连不上。")
 
     default = "ours" if endpoint.sim else "official"
     n = _pick(list(options),
@@ -242,7 +285,10 @@ def choose_client(endpoint: Endpoint, want: str | None = None) -> str:
     return options[n - 1]
 
 
-# 连上去。返回时机器人已经 BalanceStand。
+# 连上去。返回时 BalanceStand **已经发出**，但腿还在抬 —— 实测此刻机身 0.11 m，
+# 官方的标称站高是 0.33 m。要它站到标称高度得自己调 `stand()` 并轮询 `height`，参考
+# `comm/server.py` 的 `ensure_standing()`。等不到就发速度指令，等于从蹲姿起步，
+# 速度跟踪差一大截，而调用方看不出原因。
 #
 # `gains`（kp / kd / tau）只对自研控制端有意义，官方那份跑在机器上，
 # 给了也不会用到 —— 传下去由实现自己忽略。
