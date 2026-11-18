@@ -5,9 +5,21 @@
 #   ./setup_en5.sh static 192.168.123.50
 set -u
 
-IFACE="en5"
-SERVICE="AX88179B"
+SERVICE="${SERVICE:-AX88179B}"
 ROBOT="192.168.123.161"
+
+# 服务名 → 设备名。别写死 en5：同一个 USB 网卡换口重插之后，系统分配的编号
+# 会变（en5 / en6 / en7 都出现过），写死的话脚本报「30 秒内不存在」，人以为
+# 网卡坏了，其实只是名字变了。拿不到再退回 en5。
+iface_of() {
+    networksetup -listnetworkserviceorder 2>/dev/null | awk -v svc="$1" '
+        index($0, "Hardware Port: " svc) {
+            i = index($0, "Device: ")
+            if (i) { s = substr($0, i + 8); sub(/\).*/, "", s); print s; exit }
+        }'
+}
+IFACE="${IFACE:-$(iface_of "$SERVICE")}"
+IFACE="${IFACE:-en5}"
 
 MODE="${1:-dhcp}"
 IP="${2:-192.168.123.222}"
