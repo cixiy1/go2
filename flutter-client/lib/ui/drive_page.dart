@@ -709,30 +709,54 @@ class _DrivePageState extends State<DrivePage> {
   Widget _radarView(AppState app, {bool main = true}) {
     return Container(
       color: const Color(0xFF070A0C),
-      child: ValueListenableBuilder<VlaFrame?>(
-        valueListenable: app.client.vla,
-        builder: (context, f, _) {
-          if (f == null || f.sectors.isEmpty) {
-            return _backdropHint('没有测距数据', '八方位来自 VLA 的触感/雷达，手动模式没有');
-          }
-          // 主视图：雷达画大、贴底摆。居中的话正撞上大号速度读数，
-          // 「0.00」会压在「0.82」上，两个数字都读不出来。
-          return Padding(
-            padding: EdgeInsets.fromLTRB(10, main ? 26 : 8, 10, main ? 8 : 8),
-            // 主视图把它压淡：雷达是「余光里的障碍分布」，不是主角。
-            // 全亮度时它和大号速度读数抢同一块地方，两组数字互相搅。
-            child: Opacity(
-              opacity: main ? 0.55 : 1,
-              child: Align(
-                alignment: main ? Alignment.bottomCenter : Alignment.center,
-                child: SectorRadar(
-                  sectors: f.sectors,
-                  maxRange: 3,
-                  maxSide: main ? 420 : 200,
-                  showValues: !main,
+      // 两个来源，优先级不同：
+      //   手动模式 → 网关的 `radar`（感知层直接推，不依赖 VLA）
+      //   仿真/VLA → VLA 帧里的 `sectors`（那是模型自己的视野，带渲染合成）
+      // 所以这里嵌两层监听：只监听 VLA 的话，手动模式下雷达永远不刷新。
+      child: ValueListenableBuilder<GatewayState?>(
+        valueListenable: app.client.state,
+        builder: (context, st, _) {
+          return ValueListenableBuilder<VlaFrame?>(
+            valueListenable: app.client.vla,
+            builder: (context, f, _) {
+              final radar = st?.radar;
+              var sectors = const <SectorGap>[];
+              var title = '没有测距数据';
+              var note = '手动模式要等雷达出数据；仿真走 VLA';
+
+              if (radar != null && radar.sectors.isNotEmpty) {
+                sectors = radar.sectors;
+              } else if (f != null && f.sectors.isNotEmpty) {
+                sectors = f.sectors;
+              } else if (radar != null && radar.why.isNotEmpty) {
+                // 网关给了原因（雷达没起来、数据过期）就直接显示，别让人以为是
+                // 「四周空旷」。
+                title = radar.why;
+              }
+
+              if (sectors.isEmpty) {
+                return _backdropHint(title, note);
+              }
+              // 主视图：雷达画大、贴底摆。居中的话正撞上大号速度读数，
+              // 「0.00」会压在「0.82」上，两个数字都读不出来。
+              return Padding(
+                padding: EdgeInsets.fromLTRB(10, main ? 26 : 8, 10, main ? 8 : 8),
+                // 主视图把它压淡：雷达是「余光里的障碍分布」，不是主角。
+                // 全亮度时它和大号速度读数抢同一块地方，两组数字互相搅。
+                child: Opacity(
+                  opacity: main ? 0.55 : 1,
+                  child: Align(
+                    alignment: main ? Alignment.bottomCenter : Alignment.center,
+                    child: SectorRadar(
+                      sectors: sectors,
+                      maxRange: 3,
+                      maxSide: main ? 420 : 200,
+                      showValues: !main,
+                    ),
+                  ),
                 ),
-              ),
-            ),
+              );
+            },
           );
         },
       ),

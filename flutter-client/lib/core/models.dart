@@ -9,10 +9,21 @@ import 'dart:typed_data';
 
 // 二进制帧 = 1 字节来源 + JPEG。来源分两种：VLA 渲染窗口（叠了想法字幕、
 // 视野条）和纯相机图。界面上要标出来 —— 把合成图当成「实景」会误判。
+//
+// 宽高从 JPEG 的 SOF 段里读，不解码像素。仿真给 4:3（240×320），真机的
+// 前置相机是 1280×720 的鱼眼（16:9）—— 界面按固定 4:3 显示会把两边切掉，
+// 而鱼眼的价值正好在两边。
 class CameraFrame {
-  const CameraFrame(this.kind, this.bytes);
+  const CameraFrame(this.kind, this.bytes,
+      {this.width, this.height, this.seq = 0});
   final int kind;
   final Uint8List bytes;
+  final int? width;
+  final int? height;
+
+  //: 自连接以来的第几帧。角标显示它：数字在跳 = 帧一直在到。
+  //: 场景静止时 JPEG 大小几乎不变，只看字节数分不清「画面没动」和「帧停了」。
+  final int seq;
 
   static const vla = 1;
   static const camera = 2;
@@ -20,6 +31,65 @@ class CameraFrame {
   bool get isVla => kind == vla;
   bool get isCamera => kind == camera;
   String get label => isVla ? 'VLA 渲染' : (isCamera ? '机载相机' : '画面');
+
+  //: 源画面宽高比；读不出来时返回 null，调用方退回默认值。
+  double? get aspect {
+    final w = width, h = height;
+    if (w == null || h == null || w <= 0 || h <= 0) return null;
+    return w / h;
+  }
+
+  factory CameraFrame.parse(Uint8List raw, {int seq = 0}) {
+    if (raw.length < 3) return CameraFrame(0, Uint8List(0));
+    // 必须复制，不能用 sublistView。视图的 buffer 仍是那条完整的 WebSocket
+    // 消息（开头多一个来源字节、offsetInBytes=1），而 Web 上某些解码路径
+    // （CanvasKit 走 blob URL 那一条）会拿整个 buffer 去解码 —— JPEG 头前面
+    // 多出 0x02，直接 ImageCodecException: Failed to load image。
+    // 每帧几 KB、16 Hz，复制的代价可以忽略。
+    final body = raw.sublist(1);
+    final dims = jpegSize(body);
+    return CameraFrame(raw[0], body,
+        width: dims?.$1, height: dims?.$2, seq: seq);
+  }
+}
+
+// 从 JPEG 里读宽高：扫到 SOF0/1/2 段，取那两个 16 位整数。
+//
+// 只认这三种 SOF：C4（Huffman 表）、C8（保留）、CC（算术编码表）不是帧头，
+// 长度语义也不同，跳过去。扫描在第一个 SOF 就停，正常图里它在几十字节处。
+(int, int)? jpegSize(Uint8List b) {
+  if (b.length < 4 || b[0] != 0xFF || b[1] != 0xD8) return null;
+  var i = 2;
+  while (i + 9 < b.length) {
+    if (b[i] != 0xFF) {
+      i++;
+      continue;
+    }
+    final marker = b[i + 1];
+    // 填充字节和独立标记没有长度字段。
+    if (marker == 0xFF) {
+      i++;
+      continue;
+    }
+    if (marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
+      i += 2;
+      continue;
+    }
+    final len = (b[i + 2] << 8) | b[i + 3];
+    if (len < 2) return null;
+    final isSof = marker >= 0xC0 &&
+        marker <= 0xCF &&
+        marker != 0xC4 &&
+        marker != 0xC8 &&
+        marker != 0xCC;
+    if (isSof) {
+      final h = (b[i + 5] << 8) | b[i + 6];
+      final w = (b[i + 7] << 8) | b[i + 8];
+      return (w, h);
+    }
+    i += 2 + len;
+  }
+  return null;
 }
 
 double? _d(dynamic v) {
@@ -75,6 +145,8 @@ class LinkInfo {
     this.preset,
     this.target,
     this.rttMs,
+    this.controller,
+    this.available = const [],
   });
   final bool ok;
   final String? error;
@@ -82,12 +154,21 @@ class LinkInfo {
   final String? target;
   final double? rttMs;
 
+  //: 实际生效的高层控制端（服务端报的），以及这个端点还能换成哪些。
+  //: 不能显示「我请求的那个」—— attach 到别人起的服务端时两者会不一致。
+  final String? controller;
+  final List<String> available;
+
   factory LinkInfo.fromJson(Map<String, dynamic> j) => LinkInfo(
     ok: _b(j['ok']),
     error: j['error'] == null ? null : _s(j['error']),
     preset: j['preset'] == null ? null : _s(j['preset']),
     target: j['target'] == null ? null : _s(j['target']),
     rttMs: _d(j['rtt_ms']),
+    controller: j['controller'] == null ? null : _s(j['controller']),
+    available: ((j['available'] as List?) ?? const [])
+        .map((e) => e.toString())
+        .toList(growable: false),
   );
 }
 
@@ -207,6 +288,7 @@ class GatewayState {
     this.input = const InputInfo(),
     this.lease = const LeaseInfo(),
     this.vla = const VlaRuntime(),
+    this.radar = const RadarInfo(),
     this.cam = const CamInfo(),
     this.limits = const Limits(),
     this.uptime = 0,
@@ -220,6 +302,7 @@ class GatewayState {
   final InputInfo input;
   final LeaseInfo lease;
   final VlaRuntime vla;
+  final RadarInfo radar;
   final CamInfo cam;
   final Limits limits;
   final double uptime;
@@ -233,6 +316,7 @@ class GatewayState {
     input: InputInfo.fromJson(_m(j['input'])),
     lease: LeaseInfo.fromJson(_m(j['lease'])),
     vla: VlaRuntime.fromJson(_m(j['vla'])),
+    radar: RadarInfo.fromJson(_m(j['radar'])),
     limits: Limits.fromJson(_m(j['limits'])),
     uptime: _d(_m(j['server'])['uptime']) ?? 0,
   );
@@ -246,6 +330,44 @@ class SectorGap {
 
   factory SectorGap.fromJson(Map<String, dynamic> j) =>
       SectorGap(_s(j['name']), _d(j['gap']) ?? 0, _d(j['top']) ?? 0);
+}
+
+// 雷达：感知层自己出的一份数据，跟 VLA 无关。
+//
+// 原来八方位只存在于 VLA 帧（`VlaFrame.sectors`），因为那是唯一同时持有感知
+// 对象的进程。手动遥控没有 VLA 进程，于是雷达图永远是「没有测距数据」——
+// 而遥控恰恰最需要看四周。现在网关从馈送进程读一份独立的 radar 字段，
+// 手动模式也有数据。
+class RadarInfo {
+  const RadarInfo({
+    this.ok = false,
+    this.why = '',
+    this.frontGap = 0,
+    this.sectors = const [],
+    this.age = 0,
+  });
+
+  final bool ok;
+  final String why;
+  final double frontGap;
+  final List<SectorGap> sectors;
+  final double age;
+
+  factory RadarInfo.fromJson(Map<String, dynamic> j) {
+    final raw = j['sectors'];
+    return RadarInfo(
+      ok: j['ok'] == true,
+      why: _s(j['why']),
+      frontGap: _d(j['front_gap']) ?? 0,
+      age: _d(j['age']) ?? 0,
+      sectors: raw is List
+          ? raw
+                .whereType<Map>()
+                .map((e) => SectorGap.fromJson(Map<String, dynamic>.from(e)))
+                .toList(growable: false)
+          : const [],
+    );
+  }
 }
 
 class VisionInfo {

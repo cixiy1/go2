@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import signal
 import sys
@@ -66,6 +67,75 @@ def _write(out: Path, data: bytes) -> None:
     os.replace(tmp, out)
 
 
+# 雷达的取值只需要位姿、倾角、高度和关节角，不需要控制权。
+#
+# 为什么不复用 `control.virtual.backends.OfficialBackend`：它在构造里又调一次
+# `ChannelFactoryInitialize`，而这个进程已经为相机初始化过了 —— 第二次调用抛异常，
+# 整条馈送就挂。这里只要读，不需要 SportClient，自己订阅两个话题更省。
+class _FeedBackend:
+    """够 `LidarPercept` 用的一份只读后端。"""
+
+    def __init__(self) -> None:
+        from unitree_sdk2py.core.channel import ChannelSubscriber
+        from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_, SportModeState_
+
+        self._sport = None
+        self._low = None
+        ChannelSubscriber("rt/sportmodestate", SportModeState_).Init(self._on_sport, 10)
+        ChannelSubscriber("rt/lowstate", LowState_).Init(self._on_low, 10)
+
+    def _on_sport(self, msg) -> None:
+        self._sport = msg
+
+    def _on_low(self, msg) -> None:
+        self._low = msg
+
+    def _wait(self, timeout: float = 3.0) -> bool:
+        import time as _t
+
+        end = _t.monotonic() + timeout
+        while _t.monotonic() < end:
+            if self._sport is not None and self._low is not None:
+                return True
+            _t.sleep(0.05)
+        return self._sport is not None
+
+    @property
+    def pos(self):
+        sp = self._sport
+        return None if sp is None else tuple(float(v) for v in sp.position[:3])
+
+    @property
+    def rpy(self):
+        sp = self._sport
+        if sp is not None:
+            imu = sp.imu_state
+            return (float(imu.rpy[0]), float(imu.rpy[1]), float(imu.rpy[2]))
+        low = self._low
+        if low is None:
+            return None
+        q = low.imu_state.quaternion           # w, x, y, z
+        w, x, y, z = (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+        import math
+
+        roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
+        pitch = math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x))))
+        yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+        return (roll, pitch, yaw)
+
+    @property
+    def height(self):
+        sp = self._sport
+        return None if sp is None else float(sp.body_height)
+
+    @property
+    def q(self):
+        low = self._low
+        if low is None:
+            return None
+        return [float(m.q) for m in low.motor_state[:12]]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="feed", description="相机馈送：按频率把画面写成 JPEG")
@@ -77,6 +147,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--quality", type=int, default=78, help="JPEG 质量 1~95")
     ap.add_argument("--max-width", type=int, default=640,
                     help="超过这个宽度就等比缩小，0=不缩")
+    # 雷达单独写一份 JSON 给网关。留空就是只出图，不开雷达。
+    #
+    # 为什么要单独一份：`sectors` 原来只出现在 VLA 帧里（`control/embodied/
+    # runner.py`），手动模式没有 VLA 进程，雷达图就永远空白 —— 而遥控恰恰最需要
+    # 看四周。雷达是感知层的东西，不该由 VLA 顺带携带。
+    ap.add_argument("--radar-out", default="",
+                    help="雷达 JSON 输出路径，留空则不开雷达")
+    ap.add_argument("--radar-hz", type=float, default=10.0, help="雷达更新频率")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
 
@@ -140,6 +218,36 @@ def main(argv: list[str] | None = None) -> int:
     last_note = 0.0
     t0 = time.monotonic()
 
+    # 雷达只在真机开：仿真那侧的射线由 VLA 自己算，而且 UDP 视频流已经占了端口，
+    # 再加一路 lidar 没有数据源。
+    radar = None
+    radar_path = Path(args.radar_out) if args.radar_out else None
+    radar_period = 1.0 / max(0.5, args.radar_hz)
+    radar_tick = 0.0
+    radar_writes = 0
+    last_clouds = 0
+    if radar_path is not None:
+        if args.preset != "real":
+            log("仿真没有雷达点云，--radar-out 忽略")
+            radar_path = None
+        else:
+            try:
+                from quadruped.percept.lidar import LidarPercept
+
+                backend = _FeedBackend()
+                if not backend._wait(3.0):
+                    log("3 秒内没收到 rt/sportmodestate，雷达先不起")
+                radar = LidarPercept(backend, verbose=False)
+                if not radar.ok:
+                    log(f"雷达没收到点云（{radar.last_error or '未订阅上'}），"
+                        "继续出图，雷达等有数据再报")
+                radar_path.parent.mkdir(parents=True, exist_ok=True)
+                log(f"雷达已开：{radar_path}")
+            except Exception as err:                        # noqa: BLE001
+                log(f"雷达起不来：{type(err).__name__}: {err}")
+                radar = None
+                radar_path = None
+
     try:
         while not stop:
             rgb = read()
@@ -152,13 +260,40 @@ def main(argv: list[str] | None = None) -> int:
                     log(f"编码失败：{type(err).__name__}: {err}")
 
             now = time.monotonic()
+            if radar is not None and radar_path is not None and now >= radar_tick:
+                radar_tick = now + radar_period
+                try:
+                    p = radar.read()
+                    if p is not None and p.rays:
+                        payload = {
+                            "t": round(time.time(), 3),
+                            "ok": True,
+                            "front_gap": round(float(p.front_gap()), 2),
+                            "sectors": [{"name": x.name, "gap": round(x.gap, 2),
+                                         "top": round(x.top, 2)}
+                                        for x in p.sectors()],
+                        }
+                        _write(radar_path, json.dumps(payload).encode())
+                        radar_writes += 1
+                except Exception as err:                    # noqa: BLE001
+                    log(f"雷达读取失败：{type(err).__name__}: {err}")
             # 每 5 秒报一次状态。取不到帧的时候这条是唯一能看出原因的线索
             # （videohub 被别的客户端占着、相机在仿真里被关掉、网卡不对）。
             if now - last_note > 5.0:
-                last_note = now
                 age = None if not last_ok else round(now - last_ok, 1)
+                extra = ""
+                if radar is not None:
+                    # `radar.cloud_hz` 从来没被赋值过（感知层那个字段是死的），
+                    # 自己按两次采样差算，别打印一个恒为 0 的假频率。
+                    hz = 0.0
+                    if last_note:
+                        hz = (radar.clouds - last_clouds) / (now - last_note)
+                    extra = (f" · 雷达 {radar_writes} 次 / 点云 {radar.clouds} 帧"
+                             f" / {hz:.1f} Hz")
+                    last_clouds = radar.clouds
+                last_note = now
                 log(f"{describe()} · 已出图 {frames} · 最近一帧 "
-                    f"{'无' if age is None else str(age) + 's 前'}")
+                    f"{'无' if age is None else str(age) + 's 前'}{extra}")
 
             tick += period
             rest = period - (time.perf_counter() - tick)

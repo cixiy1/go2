@@ -44,6 +44,9 @@ class CamHost:
         self.child: Child | None = None
         # 文件名带 pid：同时跑两个网关时不会互相覆盖同一个文件。
         self.stream_path = Path(tempfile.gettempdir()) / f"go2-cam-{os.getpid()}.jpg"
+        # 雷达和相机同一个进程。两者都要 DDS，而 `ChannelFactoryInitialize`
+        # 一进程只能一次 —— 分成两个进程就等于要初始化两遍，第二遍直接抛。
+        self.radar_path = Path(tempfile.gettempdir()) / f"go2-radar-{os.getpid()}.json"
 
     def _log(self, msg: str) -> None:
         if self.echo:
@@ -57,9 +60,10 @@ class CamHost:
         if self.running:
             return {"ok": True, "already": True}
         self.stream_path.unlink(missing_ok=True)
+        self.radar_path.unlink(missing_ok=True)
         args = [interpreter(), "-m", "quadruped.percept.feed",
                 "--preset", self.preset, "--out", str(self.stream_path),
-                "--hz", f"{self.hz:g}"]
+                "--hz", f"{self.hz:g}", "--radar-out", str(self.radar_path)]
         self._log(f"起馈送：{' '.join(args[3:])}")
         self.child = Child(name="cam", args=args, cwd=ROOT,
                            echo=self.echo).start()
@@ -72,6 +76,7 @@ class CamHost:
         child.stop(grace=STOP_GRACE)
         self.child = None
         self.stream_path.unlink(missing_ok=True)
+        self.radar_path.unlink(missing_ok=True)
 
     def status(self) -> dict:
         if not self.running:
@@ -85,4 +90,5 @@ class CamHost:
                     "note": note}
         return {"running": True, "pid": self.child.pid if self.child else None,
                 "path": str(self.stream_path),
+                "radar": str(self.radar_path),
                 "uptime": round(time.time() - (self.child.started_at or time.time()), 1)}

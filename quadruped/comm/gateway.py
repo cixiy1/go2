@@ -216,6 +216,11 @@ class Gateway:
         self.cam = CamHost(preset=preset, hz=cam_hz, echo=verbose)
         self.vla_event: dict = {}
         self.vla_replies: deque[dict] = deque(maxlen=40)
+        # 雷达：由 `percept.feed` 写 JSON，这里按 mtime 变化读。
+        # 独立于 VLA —— 手动模式下没有 VLA 进程，雷达照样要有。
+        self._radar_cache: dict = {}
+        self._radar_mtime = 0.0
+        self._radar_read_at = 0.0
         self._jobs: queue.Queue = queue.Queue()
         self.stopped = threading.Event()
         self._stream_mtime = 0.0
@@ -241,6 +246,36 @@ class Gateway:
         self._log(f"{kind}: {text}")
 
     # -- 状态帧 ----------------------------------------------------------
+
+    # 雷达是感知层的东西，跟 VLA 没关系。原来 `sectors` 只在 VLA 帧里
+    # （`control/embodied/runner.py`），手动模式没有 VLA 进程，雷达图就永远空白 ——
+    # 而遥控最需要看四周。现在由 `percept.feed` 单独写一份 JSON，这里读进来。
+    #
+    # 按 mtime 变化才读，10 Hz 的状态循环里一次 stat 是微秒级。
+    def _radar(self) -> dict:
+        path = self.cam.radar_path
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return {"ok": False, "why": "雷达没起来", "sectors": []}
+        if mtime != self._radar_mtime:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as err:
+                return {"ok": False, "why": f"雷达文件读不了：{type(err).__name__}",
+                        "sectors": []}
+            self._radar_mtime = mtime
+            self._radar_cache = data
+        if not self._radar_cache:
+            return {"ok": False, "why": "雷达还没出数据", "sectors": []}
+        out = dict(self._radar_cache)
+        # 超过 1.5 秒没更新就当断了：拿旧数据画雷达比「没有雷达」更危险，
+        # 人会以为那是当前四周。
+        out["age"] = round(max(0.0, time.time() - float(out.get("t") or 0)), 2)
+        if out["age"] > 1.5:
+            out["ok"] = False
+            out["why"] = f"雷达数据 {out['age']:.1f} 秒没更新"
+        return out
 
     def _state(self, client: Client) -> dict:
         with self._lock:
@@ -284,6 +319,7 @@ class Gateway:
             "input": {"vx": sp["vx"], "vy": sp["vy"], "vyaw": sp["vyaw"],
                       "age_ms": age, "source": src, "driving": self.driving},
             "vla": self.vla.status(),
+            "radar": self._radar(),
             "cam": self.cam.status(),
             "limits": {"vx": VX_MAX, "vy": VY_MAX,
                        "vyaw": VYAW_MAX,
