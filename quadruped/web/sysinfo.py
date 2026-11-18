@@ -28,7 +28,11 @@ ROBOT_IP = "192.168.123.161"
 
 # 系统命令的超时。nmcli 连 Wi-Fi 可能要等 DHCP，给宽一点；其它都是本地查询。
 T_QUICK = 3.0
-T_SCAN = 12.0
+# 真扫描要 15 秒上下。扩展坞那块 RTL8822BU 接口刚 up 起来时，第一次
+# `dev wifi list --rescan yes` 实测 14.8 秒才返回（还是 0 条）；接口就绪后
+# 再扫只要 0.05 秒 —— NetworkManager 认为结果还新鲜时直接给缓存。
+# 原来这里写 12 秒，正好把唯一一次真扫描掐断，页面永远看不到列表。
+T_SCAN = 20.0
 T_CONNECT = 30.0
 
 
@@ -302,8 +306,12 @@ def _parse_aps(out: str) -> list[dict]:
     return aps
 
 
-# 扫一遍周围的 Wi-Fi。`--rescan yes` 会真的触发一次扫描，慢（3~8 秒），
-# 所以这个接口不适合轮询 —— 页面上是「点一下扫」。
+# 扫一遍周围的 Wi-Fi。`--rescan yes` 会真的触发一次扫描，慢（3~8 秒，
+# rtw88 接口刚起来那次能到 15 秒），所以这个接口不适合轮询 ——
+# 页面上是「点一下扫」。
+#
+# 服务启动时先调一次 `wifi_warm()` 把这个贵操作挡在用户点击之前，
+# 之后页面上的每一次扫描都走 NetworkManager 的缓存（~0.05 秒）。
 def wifi_scan() -> dict:
     wifi = wifi_device()
     if not wifi["present"]:
@@ -325,6 +333,15 @@ def wifi_scan() -> dict:
             return {"ok": False, "aps": [],
                     "why": (err or err2 or "扫描没有返回结果，接口可能正忙，再点一次").strip()[:160]}
     return {"ok": True, "aps": aps, "device": wifi["device"]}
+
+
+# 预热：服务启动后后台跑一次真扫描，把 rtw88 那 15 秒挪到用户点开页面之前。
+# 不起线程直接调会拖慢启动（无线的扫描还会和有线抢 NM 的 D-Bus），所以单独跑。
+def wifi_warm() -> None:
+    if not wifi_device()["present"]:
+        return
+    _run(["nmcli", "-t", "-f", "SSID", "dev", "wifi", "list", "--rescan", "yes"],
+         timeout=T_SCAN)
 
 
 # 连一个 Wi-Fi。成功时 nmcli 会返回 0 并写出连接；失败原因（密码错、超时）

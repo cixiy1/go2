@@ -607,6 +607,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  画面：{frame_path}（子进程按 5 Hz 覆盖，页面自己进来取）")
     print("  Ctrl+C 退出（不会自动停机器人 —— 先按页面上的『停止』）", flush=True)
 
+    # 无线预热。扩展坞那块 RTL8822BU 接口刚起来时，第一次真扫描要 15 秒；
+    # 挪到后台跑，用户点开「网络」页签时列表已经在了。没有无线网口时
+    # `wifi_warm` 自己会立刻返回。
+    threading.Thread(target=sysinfo.wifi_warm, name="wifi-warm", daemon=True).start()
+
     if a.open:
         # 走 127.0.0.1 而不是刚才那个局域网 IP：本机开会话时它更稳（多网卡时
         # `local_ip()` 可能选到没路由的那张）。等一下再开，`serve_forever` 还没
