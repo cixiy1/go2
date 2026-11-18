@@ -10,19 +10,24 @@ DDS、`Go2Controller` 的 idle 模式、`joint_target` 的 50 Hz 发布、桥的
 更新，PD 每步都算 —— 与训练时的 decimation 一致。
 
 `--actuator` 把力矩换成训练时的电机模型（`actuator_net`），`--realism` 把仿真桥那三样
-真机特性（5 ms 延迟 / 150 Hz 带宽 / 编码器噪声）搬进来。两个都是证伪用的开关，
-不是改进项。实测谁也没把它救回来：
+真机特性（5 ms 延迟 / 150 Hz 带宽 / 编码器噪声）搬进来。两个都是证伪用的开关。
 
-    力矩来源                          最大倾角   倒地时刻
-    PD kp20 kd0.5                     48.4°    没倒（8 s）
-    PD kp20 kd0.78                    68.8°    4.4 s
-    PD kp20 kd0.5 + 真机特性          68.8°    4.0 s
-    actuator_net                      69.0°    3.5 s
-    （机身 0.28 m 起，命令 vx=0，动作限幅不额外加）
+2026-11-18 实测（`--flat --seconds 6 --vx 0.4`，本仓库当前权重）：
 
-两件事因此可以划掉：力矩模型（actuator_net ≈ PD(19.4, 0.78) + 一帧死区，换过去更差），
-和「执行器太理想」（补上延迟/带宽/噪声，也更差 —— 延迟减相位裕度，跟直觉相反）。
-问题不在执行器这一层。
+    配置                                  位移       最大倾角   足端 z 峰峰
+    PD kp20 kd0.5（500 Hz）              +1.456 m    10.7°     7.8 cm
+    + 真机特性（--realism）              +1.561 m    10.2°     8.8 cm
+    + actuator_net（--actuator）         +1.173 m    11.2°     —
+    PD 250 Hz（--pd-every 2）            +0.200 m    11.3°     0.8 cm
+    PD 166 Hz（--pd-every 3）            -0.039 m     7.9°     0.6 cm
+    PD 125 Hz（--pd-every 4）            -0.018 m     6.5°     0.8 cm
+
+结论：**执行器模型不是瓶颈**（换 actuator_net、补真机特性都还走得动）；真正的开关是
+**力矩更新率**。力矩被保持 4 ms（250 Hz）以上时足端峰峰掉到 1 cm 量级、机身沉到
+0.15 m，看上去就是「kp20 脚不离地、走不动」—— 现场与 `--pd-every 2` 及以上一致。
+
+足端几乎不离地不是摩擦问题：地面 μ 从 0.4 扫到 1.0、足端 μ 从 0.2 扫到 0.9，
+位移变化都在 ±2% 以内（见 `--floor-friction` / `--foot-friction`）。
 
 判据只有一条：机身倾角。`height` 不能用，我们的运动学高度在机器人仰躺时照样
 报 0.26 m。
@@ -122,8 +127,10 @@ def main() -> int:
     ap.add_argument("--bound", type=float, default=None,
                     help="相位参数之一。0.5 与 phase 0.5 组合是 bound")
     ap.add_argument("--pd-every", type=int, default=1,
-                    help="PD 每几个物理步算一次，中间保持。1 = 每步重算（500 Hz），"
-                         "4 = 与控制拍同频（50 Hz，与仿真桥一致）")
+                    help="力矩每几个物理步算一次、中间保持（零阶保持）。1 = 每个物理步"
+                         "重算，与真机驱动器（kHz 级电流环）和仿真桥的 "
+                         "UpdateTorque（每个物理步一次）一致。>1 是诊断用的劣化开关："
+                         "2 就已经足端不离地、位移归零，不要拿它当「仿真桥的样子」")
     ap.add_argument("--lag", action="store_true",
                     help="控制用上一拍的策略输出（人为加 20 ms 延迟）。诊断用")
     ap.add_argument("--solref", type=float, nargs=2, default=None,
@@ -142,6 +149,15 @@ def main() -> int:
                          "位置环在 kHz 级。策略恒 50 Hz，decimation 自动取 sim_hz/50")
     ap.add_argument("--init-z", type=float, default=0.31,
                     help="起始机身高度。0.31 略高于站高，落地会更硬；参考链用 0.30")
+    ap.add_argument("--floor-friction", type=float, default=None,
+                    help="覆盖地面滑动摩擦系数（go2.xml 是 0.4）。训练域随机化是 "
+                         "0.4~1.2，0.4 是下界不是笔误；这一项只用来量它对位移的影响")
+    ap.add_argument("--foot-friction", type=float, default=None,
+                    help="覆盖足端滑动摩擦（go2.xml 是 0.9）。MuJoCo 的接触摩擦取"
+                         "两个 geom 的逐分量最大值，所以只有这一项真正决定抓地力")
+    ap.add_argument("--foot-report", action="store_true",
+                    help="报足端行为：抬脚高度、着地时足端水平速度（打滑量）、"
+                         "落地次数。位移数字只能说明机体动了，滑也能让 x 变大")
     ap.add_argument("--cold-warm", action="store_true",
                     help="预热期不调用策略（动作历史全 0、时钟不动），与部署侧"
                          "「先按住 0.6 s 再接管」一致")
@@ -155,6 +171,12 @@ def main() -> int:
     dec = max(1, int(round(a.sim_hz / 50.0)))
     model = mujoco.MjModel.from_xml_path(str(flat_scene() if a.flat else SCENE))
     model.opt.timestep = dt
+    if a.floor_friction is not None:
+        gid = int(model.geom("floor").id)
+        model.geom_friction[gid, 0] = a.floor_friction
+    if a.foot_friction is not None:
+        for name in ("FL", "FR", "RL", "RR"):
+            model.geom_friction[int(model.geom(name).id), 0] = a.foot_friction
     if a.solref is not None:
         model.geom_solref[:, :] = a.solref
     if a.joint_damp is not None:
@@ -211,6 +233,16 @@ def main() -> int:
     rng = np.random.default_rng(20261110)                # 固定种子，结果可复现
     cmd_q: deque = deque()
     ctrl_f = np.zeros(len(q_des))
+
+    # 足端统计。位移是机体的，不区分「走」和「滑」；这里量足端自己：
+    #   z 峰峰  = 抬脚高度（<2 cm 就是在地上蹭）
+    #   着地滑速 = 该脚处于接触状态时的水平速度（脚踩住了就该接近 0）
+    feet = [int(model.geom(n).id) for n in ("FL", "FR", "RL", "RR")]
+    fz = {g: [9.9, -9.9] for g in feet}
+    slip = {g: [0.0, 0] for g in feet}        # [累计滑速×时间, 采样数]
+    last_pos = {g: None for g in feet}
+    air = {g: False for g in feet}
+    steps_n = {g: 0 for g in feet}
 
     worst = 0.0
     moved = None
@@ -271,6 +303,25 @@ def main() -> int:
             data.ctrl[:] = raw
         mujoco.mj_step(model, data)
 
+        if a.foot_report and step >= warmup_steps:
+            con = {c.geom1 for c in data.contact[:data.ncon]} | \
+                  {c.geom2 for c in data.contact[:data.ncon]}
+            for g in feet:
+                z = float(data.geom_xpos[g][2])
+                fz[g][0] = min(fz[g][0], z)
+                fz[g][1] = max(fz[g][1], z)
+                pos = data.geom_xpos[g][:2].copy()
+                if last_pos[g] is not None and g in con:
+                    v = float(np.linalg.norm(pos - last_pos[g])) / dt
+                    slip[g][0] += v
+                    slip[g][1] += 1
+                last_pos[g] = pos
+                # 落地次数：从「离地」到「接触」
+                touching = g in con
+                if touching and air[g]:
+                    steps_n[g] += 1
+                air[g] = not touching
+
         if step >= warmup_steps:
             tilt = tilt_rad(rpy)
             worst = max(worst, tilt)
@@ -286,8 +337,20 @@ def main() -> int:
                 break
 
     print()
+    # 朝向一并打出来：只在「直线走」时 x 位移才等于走了多远。斜着跑或者画圆，
+    # 同一个 x 位移对应的是更长的路径。
+    yaw = math.degrees(rpy_from_quat(sensor_view(model, data)[2])[2])
     print(f"最大倾角 {math.degrees(worst):.1f}°   末态高度 {data.qpos[2]:.3f} m   "
-          f"位移 {(data.qpos[0] - moved) if moved is not None else 0:+.3f} m")
+          f"位移 {(data.qpos[0] - moved) if moved is not None else 0:+.3f} m   "
+          f"末态朝向 {yaw:+.0f}°")
+    if a.foot_report:
+        print()
+        for g in feet:
+            name = model.geom(g).name
+            pp = (fz[g][1] - fz[g][0]) * 100
+            v = (slip[g][0] / slip[g][1]) if slip[g][1] else float("nan")
+            print(f"  足 {name}: z 峰峰 {pp:4.1f} cm   着地滑速 {v:5.3f} m/s"
+                  f"   落地 {steps_n[g]} 次")
     src = "actuator_net" if act is not None else f"PD kp{a.kp:g} kd{a.kd:g}"
     src += " + 真机特性" if a.realism else " 理想执行器"
     print(f"结论：{'站住' if worst < 0.6 else '没站住'}"
