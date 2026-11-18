@@ -29,10 +29,16 @@ class ThoughtCard extends StatelessWidget {
           children: [
             const StatusChip(text: '判断', color: C.vio, dense: true),
             const SizedBox(width: 8),
+            // 这一行在手机上是「判断」卡片（约 216 pt），推理耗时那段文字
+            // 原来不带弹性，414 pt 屏上溢出 87 px。让它自己截断。
             if (f != null)
-              Text(
-                '推理 ${f.genS.toStringAsFixed(2)}s · ${f.thinkRate.toStringAsFixed(2)} 次/s',
-                style: const TextStyle(fontSize: 10.5, color: C.faint),
+              Flexible(
+                child: Text(
+                  '推理 ${f.genS.toStringAsFixed(2)}s · ${f.thinkRate.toStringAsFixed(2)} 次/s',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 10.5, color: C.faint),
+                ),
               ),
           ],
         ),
@@ -199,9 +205,7 @@ class _Bubble extends StatelessWidget {
             bottomLeft: Radius.circular(mine ? 11 : 3),
             bottomRight: Radius.circular(mine ? 3 : 11),
           ),
-          border: Border.all(
-            color: mine ? C.accent.withValues(alpha: 0.35) : C.line,
-          ),
+
         ),
         child: Column(
           crossAxisAlignment: mine

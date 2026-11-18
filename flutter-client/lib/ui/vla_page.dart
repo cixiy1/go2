@@ -115,43 +115,60 @@ class _VlaPageState extends State<VlaPage> {
 
   // 窄屏：手机竖屏。摄像头、判断、雷达三块都得在，但聊天要留够高度 ——
   // 前两版把雷达整行放在底部，剩余高度全被它吃掉，对话只剩一个标题栏。
-  // 这一版让「判断」和雷达并排，省下的 148 px 全部给对话。
+  // 这一版让「判断」和雷达并排，省下的高度给对话。
+  //
+  // 除顶栏外**每一项都是弹性的**，没有一个写死的像素高度。写死的那一版在
+  // 414×896 上溢出 46 px、360×640 上溢出 175 px（悬浮底栏的安全区吃掉的
+  // 高度随机型变），表现是对话区被切掉一截。屏幕特别矮时把指标条省掉 ——
+  // 那几个数在判断卡片和顶栏里都能看到。
   Widget _narrow(AppState app, GatewayState? st) {
+    final tall = MediaQuery.sizeOf(context).height >= 720;
     return Column(
       children: [
         _topBar(app, st),
+        if (tall) ...[
+          const SizedBox(height: 10),
+          _metricsStrip(app),
+        ],
         const SizedBox(height: 10),
-        _metricsStrip(app),
-        const SizedBox(height: 10),
-        ValueListenableBuilder<CameraFrame?>(
-          valueListenable: app.client.frame,
-          builder: (context, frame, _) => ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 200),
-            child: ValueListenableBuilder<VlaFrame?>(
-              valueListenable: app.client.vla,
-              builder: (context, f, _) => CameraPanel(
-                frame: frame?.bytes,
-                frontGap: f?.frontGap,
-                alert: f?.alert ?? false,
-                running: st?.vla.running ?? false,
+        Flexible(
+          flex: 4,
+          child: ValueListenableBuilder<CameraFrame?>(
+            valueListenable: app.client.frame,
+            builder: (context, frame, _) => ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 220),
+              child: ValueListenableBuilder<VlaFrame?>(
+                valueListenable: app.client.vla,
+                builder: (context, f, _) => CameraPanel(
+                  frame: frame?.bytes,
+                  aspect: frame?.aspect,
+                  frontGap: f?.frontGap,
+                  alert: f?.alert ?? false,
+                  running: st?.vla.running ?? false,
+                ),
               ),
             ),
           ),
         ),
         const SizedBox(height: 10),
-        SizedBox(
-          height: 168,
+        Flexible(
+          flex: 3,
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(flex: 3, child: _thoughtPanel(app, maxLines: 4)),
-              const SizedBox(width: 10),
-              Expanded(flex: 2, child: _radarPanel(app)),
+              Expanded(
+                flex: 3,
+                child: _thoughtPanel(app, maxLines: 4, fill: true),
+              ),
+              if (tall) ...[
+                const SizedBox(width: 10),
+                Expanded(flex: 2, child: _radarPanel(app)),
+              ],
             ],
           ),
         ),
         const SizedBox(height: 10),
-        Expanded(child: _chatPanel(app, st)),
+        Flexible(flex: 5, child: _chatPanel(app, st)),
       ],
     );
   }
@@ -170,7 +187,7 @@ class _VlaPageState extends State<VlaPage> {
     );
   }
 
-  Widget _thoughtPanel(AppState app, {int maxLines = 6}) {
+  Widget _thoughtPanel(AppState app, {int maxLines = 6, bool fill = false}) {
     return Panel(
       title: '判断',
       trailing: ValueListenableBuilder<VlaFrame?>(
@@ -180,10 +197,16 @@ class _VlaPageState extends State<VlaPage> {
           style: const TextStyle(fontSize: 10.5, color: C.faint),
         ),
       ),
-      child: ValueListenableBuilder<VlaFrame?>(
-        valueListenable: app.client.vla,
-        builder: (context, f, _) =>
-            ThoughtCard(frame: f, maxLines: maxLines),
+      // 内容可滚动。模型那句话一长（它经常一次写三四行）就会把卡片撑破，
+      // 报 RenderFlex overflow；窄屏那张卡片的高度是跟屏幕按比例分的，
+      // 只有 `fill` 才能把滚动视图压进这个高度里。
+      fill: fill,
+      child: SingleChildScrollView(
+        child: ValueListenableBuilder<VlaFrame?>(
+          valueListenable: app.client.vla,
+          builder: (context, f, _) =>
+              ThoughtCard(frame: f, maxLines: maxLines),
+        ),
       ),
     );
   }
@@ -233,6 +256,7 @@ class _VlaPageState extends State<VlaPage> {
               valueListenable: app.client.vla,
               builder: (context, f, _) => CameraPanel(
                 frame: frame?.bytes,
+                aspect: frame?.aspect,
                 frontGap: f?.frontGap,
                 alert: f?.alert ?? false,
                 running: st?.vla.running ?? false,
@@ -342,14 +366,14 @@ class _VlaPageState extends State<VlaPage> {
         ),
         const SizedBox(width: 8),
         InkWell(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(R.inner),
           onTap: running && !_sending ? _say : null,
           child: Container(
             width: 42,
             height: 40,
             decoration: BoxDecoration(
               color: running ? C.accent.withValues(alpha: 0.16) : C.surfaceHi,
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(R.inner),
               border: Border.all(
                 color: running ? C.accent.withValues(alpha: 0.45) : C.line,
               ),
@@ -361,14 +385,14 @@ class _VlaPageState extends State<VlaPage> {
                       height: 14,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: C.accent,
+                        color: C.accentText,
                       ),
                     ),
                   )
                 : Icon(
                     Icons.send_rounded,
                     size: 17,
-                    color: running ? C.accent : C.faint,
+                    color: running ? C.accentText : C.faint,
                   ),
           ),
         ),
@@ -394,7 +418,9 @@ class _VlaPageState extends State<VlaPage> {
                           value: (f?.vx ?? 0).toStringAsFixed(2),
                           unit: 'm/s',
                           emphasis: true,
-                          color: (f?.vx ?? 0).abs() > 0.01 ? C.accent : C.dim,
+                          color: (f?.vx ?? 0).abs() > 0.01
+                              ? C.accentText
+                              : C.dim,
                         ),
                       ),
                       Expanded(
@@ -414,21 +440,25 @@ class _VlaPageState extends State<VlaPage> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  Row(
+                  // 用 Wrap 不用 Row：三枚胶囊的宽度都随内容变（步态名可能是
+                  // 一整句，转角是三位数），右列只有 300 px 时 Row 会溢出 32 px
+                  // 压出黄黑条纹。换行比截断好读。
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       StatusChip(
                         text: f?.gait ?? '—',
                         color: C.info,
                         dense: true,
                       ),
-                      const SizedBox(width: 6),
                       if (f?.turnLeftDeg != null)
                         StatusChip(
                           text: '转 ${f!.turnLeftDeg!.toStringAsFixed(0)}°',
                           color: C.warn,
                           dense: true,
                         ),
-                      const SizedBox(width: 6),
                       StatusChip(
                         text: '第 ${f?.turns ?? 0} 次转',
                         color: C.faint,
@@ -591,7 +621,7 @@ class _VlaPageState extends State<VlaPage> {
           Expanded(child: ModeSwitch(compact: true)),
           const SizedBox(width: 8),
           InkWell(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(R.inner),
             onTap: running ? () => app.client.vlaAction('stop') : null,
             child: Container(
               width: 44,
@@ -600,7 +630,7 @@ class _VlaPageState extends State<VlaPage> {
                 color: running
                     ? C.warn.withValues(alpha: 0.12)
                     : C.surfaceHi,
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: BorderRadius.circular(R.inner),
                 border: Border.all(
                     color: running ? C.warn.withValues(alpha: 0.4) : C.line),
               ),
@@ -632,8 +662,7 @@ class _VlaPageState extends State<VlaPage> {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: C.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: C.line),
+        borderRadius: BorderRadius.circular(R.card),
       ),
       child: ValueListenableBuilder<VlaFrame?>(
         valueListenable: app.client.vla,
