@@ -36,10 +36,20 @@ T_CONNECT = 30.0
 #
 # 不让异常穿出去：这个服务的调用方是 HTTP 处理器，抛出去就是 500，页面上
 # 只看到「连不上」，看不出是 nmcli 不在还是超时。
+#
+# `LC_ALL` 必须是 UTF-8，不能是 C：设成 C 之后 Python 的 filesystem encoding
+# 退化成 ASCII，**中文 SSID 传进 nmcli 会变成 ??????**（实测报
+# `No network with SSID '??????XYZ' found`），中文 Wi-Fi 名永远连不上。
+# `nmcli -t` 的输出格式本来就不随 locale 变，所以解析照样稳。
 def _run(cmd: list[str], timeout: float = T_QUICK) -> tuple[int | None, str, str]:
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           env={**os.environ, "LC_ALL": "C"})
+        # 参数自己编码成 bytes，输出显式按 UTF-8 解。systemd 拉起的进程
+        # 环境里 LANG 可能是空的，那时 Python 的 filesystem encoding 会退到
+        # ASCII，中文 SSID 在编码那一步就炸，而不是在 nmcli 那边。
+        argv = [c.encode("utf-8") if isinstance(c, str) else c for c in cmd]
+        p = subprocess.run(argv, capture_output=True, timeout=timeout,
+                           encoding="utf-8", errors="replace",
+                           env={**os.environ, "LC_ALL": "C.UTF-8"})
     except FileNotFoundError:
         return None, "", f"找不到命令 {cmd[0]}"
     except subprocess.TimeoutExpired:
@@ -264,6 +274,34 @@ def net_status() -> dict:
     return {"ifaces": ifaces(), "wifi": wifi_device(), "saved": saved}
 
 
+# 解析 `nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY dev wifi list` 的输出。
+# 同一个 SSID 会有多条（2.4G / 5G 各一个 BSSID），只留信号最强的那条。
+def _parse_aps(out: str) -> list[dict]:
+    seen, aps = {}, []
+    for line in out.splitlines():
+        f = _split_terse(line)
+        if len(f) < 4:
+            continue
+        in_use, ssid, signal, sec = f[0], f[1], f[2], f[3]
+        if not ssid:
+            continue
+        try:
+            sig = int(signal)
+        except ValueError:
+            sig = 0
+        old = seen.get(ssid)
+        if old is not None:
+            old["signal"] = max(old["signal"], sig)
+            old["active"] = old["active"] or in_use.strip() == "*"
+            continue
+        item = {"ssid": ssid, "signal": sig, "security": sec or "开放",
+                "active": in_use.strip() == "*"}
+        seen[ssid] = item
+        aps.append(item)
+    aps.sort(key=lambda a: -a["signal"])
+    return aps
+
+
 # 扫一遍周围的 Wi-Fi。`--rescan yes` 会真的触发一次扫描，慢（3~8 秒），
 # 所以这个接口不适合轮询 —— 页面上是「点一下扫」。
 def wifi_scan() -> dict:
@@ -273,24 +311,19 @@ def wifi_scan() -> dict:
     code, out, err = _run(
         ["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list",
          "--rescan", "yes"], timeout=T_SCAN)
-    if code != 0:
-        return {"ok": False, "why": (err or out).strip()[:160], "aps": []}
-    seen, aps = set(), []
-    for line in out.splitlines():
-        f = _split_terse(line)
-        if len(f) < 4:
-            continue
-        in_use, ssid, signal, sec = f[0], f[1], f[2], f[3]
-        if not ssid or ssid in seen:      # 同一个 SSID 多个频段只留一条
-            continue
-        seen.add(ssid)
-        try:
-            sig = int(signal)
-        except ValueError:
-            sig = 0
-        aps.append({"ssid": ssid, "signal": sig, "security": sec or "开放",
-                    "active": in_use.strip() == "*"})
-    aps.sort(key=lambda a: -a["signal"])
+    aps = _parse_aps(out) if code == 0 else []
+    if not aps:
+        # 接口正忙（上一次连失败、或扫描被别的东西占用）时，`--rescan yes`
+        # 会安静地返回一张空表。这时候直接报「周围没有网络」是骗人 ——
+        # 再读一次缓存，只有缓存也空才这么说。
+        code2, out2, err2 = _run(
+            ["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list"],
+            timeout=T_QUICK)
+        if code2 == 0:
+            aps = _parse_aps(out2)
+        if not aps:
+            return {"ok": False, "aps": [],
+                    "why": (err or err2 or "扫描没有返回结果，接口可能正忙，再点一次").strip()[:160]}
     return {"ok": True, "aps": aps, "device": wifi["device"]}
 
 
