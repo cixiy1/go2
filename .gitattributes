@@ -1,0 +1,13 @@
+# 行尾统一 LF：仓库在 macOS 上维护、跑在 Linux（树莓派/服务器）上，两边都不需要 CRLF。
+* text=auto eol=lf
+
+# 二进制：别让 git 当文本做 diff。策略权重只有 7 MB，但按文本处理会让
+# `git diff` 输出几十万行乱码，出问题时反而看不清真正改了哪一行代码。
+*.jit binary
+*.onnx binary
+*.pt binary
+*.safetensors binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.mp4 binary
