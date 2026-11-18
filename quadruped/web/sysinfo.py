@@ -36,6 +36,9 @@ T_QUICK = 3.0
 # 原来这里写 12 秒，正好把唯一一次真扫描掐断，页面永远看不到列表。
 T_SCAN = 20.0
 T_CONNECT = 30.0
+# 建/改连接。NetworkManager 写 profile 比查询慢，实测 `con mod` 会超过 3 秒，
+# 用 T_QUICK 会误判成超时。
+T_SETUP = 12.0
 
 
 # 跑一条命令，统一返回 (code, out, err)。code 为 None 表示超时或起不来。
@@ -403,8 +406,34 @@ def wifi_warm() -> None:
     _refresh_scan()
 
 
-# 连一个 Wi-Fi。成功时 nmcli 会返回 0 并写出连接；失败原因（密码错、超时）
-# 原样带回页面，别翻译成「连接失败」—— 那把人往错的方向带。
+# 当前无线口的状态和它挂着的连接名。STATE 可能是
+# `connected` / `connecting (getting IP configuration)` 这种带括号的长串。
+def _wifi_link() -> tuple[str, str]:
+    code, out, _ = _run(["nmcli", "-t", "-f", "DEVICE,STATE,CONNECTION", "dev"],
+                        timeout=T_QUICK)
+    for line in (out or "").splitlines():
+        f = _split_terse(line)
+        if len(f) >= 3 and f[0] == "wlan0":
+            return f[1], f[2]
+    return "unknown", ""
+
+
+# 连一个 Wi-Fi。
+#
+# 不走 `nmcli dev wifi connect`，改成「显式建 profile → 设参数 → up」三步，
+# 两个原因：
+#
+# 1. `dev wifi connect` 是连上之后才写 profile。中途锁死就留下一个 0 字节的
+#    nmconnection，下次启动 NetworkManager 直接报 invalid connection —— 实测
+#    已经攒了 3 个，全是 Yukiho 的。显式建 profile 在连接之前就把文件写完整。
+#
+# 2. 两个参数是针对这台机器实测出来的：
+#      wifi-sec.key-mgmt wpa-psk
+#        避开 WPA3 的 SAE 握手。连开放的 gdmec（无握手）三次全成功；连
+#        Yukiho（WPA2/WPA3 混合）直接锁死。差别就在握手那一下的 USB 事务量。
+#      wifi.band bg
+#        只用 2.4G。5G 的 VHT 高吞吐会放大 USB 传输，而扩展坞只是遥控用，
+#        2.4G 完全够。
 def wifi_connect(ssid: str, password: str = "", hidden: bool = False) -> dict:
     ssid = (ssid or "").strip()
     if not ssid:
@@ -414,20 +443,47 @@ def wifi_connect(ssid: str, password: str = "", hidden: bool = False) -> dict:
     wifi = wifi_device()
     if not wifi["present"]:
         return {"ok": False, "why": wifi.get("reason") or "没有无线网口"}
-    # 和后台扫描互斥：两个 nmcli 对着同一块网卡同时操作，比单扫更容易把
-    # USB 通道压死。扫完再连，别叠加。
-    if not _refresh_lock.acquire(blocking=False):
+    # 和后台扫描互斥。这里用带超时的等待而不是立刻失败 —— 服务刚启动时
+    # `wifi_warm` 会占着这把锁 15 秒，用户正好点连接就撞上，直接报「正在扫描」
+    # 体验很差。等它扫完再连就行。
+    if not _refresh_lock.acquire(timeout=18):
         return {"ok": False,
-                "why": "正在扫描 Wi-Fi，等它扫完（约 15 秒）再点连接"}
+                "why": "无线网卡正忙（扫描还没结束），等几秒再点一次"}
     try:
-        cmd = ["nmcli", "dev", "wifi", "connect", ssid]
-        if password:
-            cmd += ["password", password]
+        # 先清掉同名残留，包括那些 0 字节的坏文件（delete 对它们不一定生效，
+        # 因为 NM 根本没加载成功，所以两头都试）。
+        _run(["sudo", "-n", "nmcli", "con", "delete", ssid], timeout=T_SETUP)
+        sc = "/etc/NetworkManager/system-connections"
+        _run(["sudo", "-n", "rm", "-f", f"{sc}/{ssid}.nmconnection"], timeout=T_SETUP)
+
+        add = ["sudo", "-n", "nmcli", "con", "add", "type", "wifi",
+               "con-name", ssid, "ssid", ssid]
         if hidden:
-            cmd += ["hidden", "yes"]
-        code, out, err = _priv_bounded(cmd, T_CONNECT)
+            add += ["hidden", "yes"]
+        code, out, err = _run(add, timeout=T_SETUP)
+        if code != 0:
+            return {"ok": False, "why": f"建连接失败：{(err or out).strip()[:160]}"}
+
+        mod = ["sudo", "-n", "nmcli", "con", "mod", ssid, "wifi.band", "bg"]
+        if password:
+            mod += ["wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password]
+        code, out, err = _run(mod, timeout=T_SETUP)
+        if code != 0:
+            return {"ok": False, "why": f"设参数失败：{(err or out).strip()[:160]}"}
+
+        code, out, err = _priv_bounded(["nmcli", "--wait", "20", "con", "up", ssid], T_CONNECT)
     finally:
         _refresh_lock.release()
+
+    # nmcli 的返回码不能当结论。`--wait` 到点报失败、但连接其实还在拿 DHCP
+    # （校园网实测 30 秒还没拿到地址），这种情况按失败报就把人往错方向带了。
+    # 以 wlan0 的实际状态为准。
+    state, conn = _wifi_link()
+    if conn == ssid and state.startswith("connected"):
+        return {"ok": True, "out": f"已连上 {ssid}"}
+    if state.startswith("connecting"):
+        return {"ok": True,
+                "out": f"已关联「{ssid}」，正在等 IP 分配，稍等几秒刷新看地址"}
     if code == 0:
         return {"ok": True, "out": out.strip()[:200]}
     if code is None:
