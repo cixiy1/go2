@@ -1,0 +1,34 @@
+{
+  "id": "weather",
+  "name": "天气工具包",
+  "version": "1.0.0",
+  "description": "查询指定城市当前气温",
+  "tools": [
+    {
+      "name": "weather_now",
+      "description": "查询指定城市当前气温",
+      "parameters": {
+        "type": "object",
+        "required": ["city"],
+        "properties": {
+          "city": {
+            "type": "string",
+            "description": "城市英文名，例如 New York、London"
+          }
+        }
+      },
+      "entry": {
+        "type": "python",
+        "module": "tool.py",
+        "handler": "weather_now"
+      }
+    }
+  ],
+  "prompts": [
+    {
+      "name": "weather_guide",
+      "description": "天气查询工具的补充使用说明",
+      "path": "skill.md"
+    }
+  ]
+}

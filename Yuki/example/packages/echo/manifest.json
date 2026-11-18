@@ -1,0 +1,26 @@
+{
+  "id": "echo",
+  "name": "回声工具包",
+  "version": "1.0.0",
+  "description": "回声echo工具包",
+  "tools": [
+    {
+      "name": "echo_text",
+      "description": "用户指定你传入什么你就传入什么",
+      "parameters": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "用户指定传入"
+          }
+        }
+      },
+      "entry": {
+        "type": "command",
+        "command": ["{python}", "scripts/echo.py"]
+      }
+    }
+  ]
+}

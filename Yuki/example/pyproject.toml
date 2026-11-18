@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yuki"
+version = "0.1.0"
+description = "Yuki example agent built on yuki-kernel."
+requires-python = ">=3.11"
+dependencies = [
+    "yuki-kernel[openai,anthropic]",
+    "python-dotenv",
+    "json5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[project.scripts]
+yuki = "yuki.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

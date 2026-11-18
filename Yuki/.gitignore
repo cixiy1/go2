@@ -1,0 +1,82 @@
+# ============ Python ============
+# 字节码 / 编译产物
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 打包 / 分发
+build/
+dist/
+*.egg-info/
+.eggs/
+MANIFEST
+*.egg
+wheelhouse/
+
+# uv 锁文件（IDE 自动生成）
+uv.lock
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# 测试与覆盖率
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.mypy_cache/
+.pytype/
+.ruff_cache/
+
+# 日志与临时文件
+*.log
+*.tmp
+*.bak
+
+# Jupyter
+.ipynb_checkpoints/
+
+# 密钥 / 环境变量（保留 .env.example 作为模板）
+.env
+.env.*
+!.env.example
+
+# ============ JetBrains (PyCharm/IDEA) ============
+.idea/
+!.idea/inspectionProfiles/
+!.idea/inspectionProfiles/Project_Default.xml
+!.idea/inspectionProfiles/profiles_settings.xml
+.pycharm-inspect.vmoptions
+*.iml
+/shelf/
+/workspace.xml
+/httpRequests/
+/dataSources/
+/dataSources.local.xml
+out/
+
+# ============ VS Code ============
+.vscode/
+!.vscode/extensions.json
+
+# ============ 系统文件 ============
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ============ Qodana ============
+# qodana.yaml 是检查配置（linter 选择），可提交；缓存与报告本地产物，忽略。
+.qodana/
+qodana-report/
+/tmp/qodana-results
+
+
+# 示例运行时数据（memory/session 库，不入库）
+example/data/

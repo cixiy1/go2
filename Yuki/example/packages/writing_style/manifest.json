@@ -1,0 +1,13 @@
+{
+  "id": "writing_style",
+  "name": "写作风格包",
+  "version": "1.0.0",
+  "description": "纯提示词包示例：让回答保持简洁",
+  "prompts": [
+    {
+      "name": "concise_zh",
+      "description": "回答保持简洁、直白",
+      "path": "skill.md"
+    }
+  ]
+}
