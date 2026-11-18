@@ -22,6 +22,7 @@ import platform
 import re
 import socket
 import subprocess
+import threading
 
 # 真机主控地址。整个项目里写死这一个值（见 `test/telemetry.py`）。
 ROBOT_IP = "192.168.123.161"
@@ -73,6 +74,30 @@ def _priv(cmd: list[str], timeout: float = T_QUICK) -> tuple[int | None, str, st
         return code, out, err
     return None, out, ("需要 sudo 权限但没配免密。在扩展坞执行："
                        "`sudo ./deploy/sudoers.sh`（或给 nmcli/bluetoothctl 配 NOPASSWD）")
+
+
+# 带硬时间上限的特权命令，用于「可能把网卡搞挂」的操作（连接 Wi-Fi）。
+#
+# `subprocess.run(timeout=)` 的超时是靠 kill 实现的。而进程一旦卡进 D 状态
+# （不可中断睡眠 —— USB 传输挂死时就是这个状态），kill 只是挂一条 pending
+# 信号，run 会一直阻塞在 wait() 上，调用方的 HTTP 请求就永久挂起，页面上
+# 表现成「连接中…」永远不动。实测扩展坞就是这个情形。
+#
+# 所以把命令丢进 daemon 线程，主线程只等 timeout+3 秒，到点不管线程死活直接
+# 返回 None。daemon 线程不会挡住进程退出。
+def _priv_bounded(cmd: list[str], timeout: float) -> tuple[int | None, str, str]:
+    box: dict[str, tuple[int | None, str, str]] = {}
+
+    def work() -> None:
+        box["r"] = _run(["sudo", "-n", *cmd], timeout)
+
+    th = threading.Thread(target=work, name="priv-bounded", daemon=True)
+    th.start()
+    th.join(timeout + 3.0)
+    if th.is_alive():
+        return None, "", (f"{cmd[0]} 没有响应：已等 {timeout + 3:.0f} 秒仍未返回，"
+                          f"网卡可能卡在 USB 传输上。刷新页面重试，或重启扩展坞")
+    return box.get("r", (None, "", "内部错误：没有拿到结果"))
 
 
 # nmcli -t 的字段用 `\:` 转义冒号、`\\` 转义反斜杠。SSID 里带冒号很常见
@@ -360,9 +385,11 @@ def wifi_connect(ssid: str, password: str = "", hidden: bool = False) -> dict:
         cmd += ["password", password]
     if hidden:
         cmd += ["hidden", "yes"]
-    code, out, err = _priv(cmd, timeout=T_CONNECT)
+    code, out, err = _priv_bounded(cmd, T_CONNECT)
     if code == 0:
         return {"ok": True, "out": out.strip()[:200]}
+    if code is None:
+        return {"ok": False, "why": (err or "连接超时").strip()[:200]}
     return {"ok": False, "why": (err or out).strip()[:200] or "连接失败"}
 
 
