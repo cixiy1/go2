@@ -958,7 +958,85 @@ class _DrivePageState extends State<DrivePage> {
             ),
           ),
         Positioned(top: 0, left: 0, child: _bgControls(app)),
+        // 横屏四栏里没有「接管方式」那块面板，只留一行「遥控不可用」等于
+        // 告诉人「不行」却不给入口 —— 2026-11-19 在手机上就是这样：网关
+        // off，横屏翻遍也找不到切模式的地方。竖屏下面本来就有那两个卡片，
+        // 不用再盖一层。
+        if (!pads && (st?.mode ?? 'off') != 'manual') _takeover(app, st),
       ],
+    );
+  }
+
+  // 未接管时盖在画面上的一层。切换中显示进度和原因，不是转个圈了事 ——
+  // 那几秒狗是在蹲下 / 站起，用户得知道它在干嘛。
+  Widget _takeover(AppState app, GatewayState? st) {
+    final mode = st?.mode ?? 'off';
+    final busy = mode == 'switching';
+    final title = switch (mode) {
+      'vla' => 'VLA 正在接管',
+      'switching' => '正在切换…',
+      _ => '还没接管机器人',
+    };
+    final note = st?.note ?? '';
+    final why = busy
+        ? (note.isNotEmpty ? note : '机器人正在交还控制权')
+        : (mode == 'vla' ? '先切回手动，摇杆才有用' : '接管之后摇杆才会下发速度');
+    return Positioned.fill(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 300),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+            decoration: BoxDecoration(
+              color: C.surface.withValues(alpha: 0.94),
+              borderRadius: BorderRadius.circular(R.ctl),
+              border: Border.all(color: C.line),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: C.text,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  why,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: C.dim,
+                    height: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ActionButton(
+                  label: busy ? '切换中' : '切到手动遥控',
+                  icon: Icons.sports_esports_outlined,
+                  color: C.accentText,
+                  filled: true,
+                  busy: busy,
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          final out = await app.setMode('manual');
+                          if (out['ok'] != true) {
+                            app.client.error.value = (out['msg'] ?? '切换失败')
+                                .toString();
+                          }
+                        },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
