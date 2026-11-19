@@ -15,14 +15,21 @@ class CameraPanel extends StatelessWidget {
     this.frontGap,
     this.alert = false,
     this.running = false,
-    this.aspect = 4 / 3,
+    this.aspect,
+    this.fit = BoxFit.contain,
   });
 
   final Uint8List? frame;
   final double? frontGap;
   final bool alert;
   final bool running;
-  final double aspect;
+
+  //: 没有画面/读不出尺寸时的兜底比例。有帧时一律用帧自己的比例 ——
+  //: 真机是 16:9 鱼眼，按 4:3 显示会把两边切掉，而鱼眼的视野就在两边。
+  final double? aspect;
+
+  //: `contain` 显示整幅（看视野用），`cover` 铺满（当背景用）。
+  final BoxFit fit;
 
   @override
   Widget build(BuildContext context) {
@@ -30,12 +37,13 @@ class CameraPanel extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF060809),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: border, width: alert ? 1.6 : 1),
+        borderRadius: BorderRadius.circular(R.card),
+        // 正常不画框（和卡片同一套规矩），只有安全闸介入时才亮红边。
+        border: alert ? Border.all(color: border, width: 1.6) : null,
       ),
       clipBehavior: Clip.antiAlias,
       child: AspectRatio(
-        aspectRatio: aspect,
+        aspectRatio: aspect ?? 4 / 3,
         child: Stack(
           fit: StackFit.expand,
           children: [
@@ -43,7 +51,7 @@ class CameraPanel extends StatelessWidget {
               Image.memory(
                 frame!,
                 gaplessPlayback: true,
-                fit: BoxFit.cover,
+                fit: fit,
                 filterQuality: FilterQuality.medium,
               )
             else
@@ -100,7 +108,7 @@ class CameraPanel extends StatelessWidget {
                   ),
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.55),
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(R.inner),
                   ),
                   child: Row(
                     children: [
@@ -146,10 +154,14 @@ class CameraPanel extends StatelessWidget {
     );
   }
 
+  // 相机面板在横屏只剩 180 高，这段占位文字本身就有 70，会溢出。
+  // 包一层 scaleDown：高度够时是原尺寸，不够时整体等比缩小。
   Widget _placeholder(BuildContext context) => Center(
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
+    child: FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
         const Icon(Icons.videocam_off_outlined, size: 26, color: C.faint),
         const SizedBox(height: 8),
         Text(
@@ -161,7 +173,8 @@ class CameraPanel extends StatelessWidget {
           '画面要等策略接上之后才有',
           style: TextStyle(fontSize: 10.5, color: C.faint),
         ),
-      ],
+        ],
+      ),
     ),
   );
 }

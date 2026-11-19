@@ -75,7 +75,9 @@ class _DrivePageState extends State<DrivePage> {
               padding: EdgeInsets.all(landscape ? 8 : 12),
               child: wide
                   ? _wide(st, app)
-                  : (landscape ? _landscape(st, app) : _narrow(st, app)),
+                  : (landscape
+                        ? _landscape(st, app, box.maxWidth)
+                        : _narrow(st, app)),
             );
           },
         );
@@ -92,13 +94,15 @@ class _DrivePageState extends State<DrivePage> {
         SizedBox(width: 292, child: _leftColumn(st, app)),
         const SizedBox(width: 12),
         Expanded(
-          child: Column(children: [
-            Expanded(child: _stage(st, app)),
-            const SizedBox(height: 10),
-            _actions(app, st),
-            const SizedBox(height: 10),
-            _throttle(app, st),
-          ]),
+          child: Column(
+            children: [
+              Expanded(child: _stage(st, app)),
+              const SizedBox(height: 10),
+              _actions(app, st),
+              const SizedBox(height: 10),
+              _throttle(app, st),
+            ],
+          ),
         ),
         const SizedBox(width: 12),
         SizedBox(width: 268, child: _rightColumn(st, app)),
@@ -279,7 +283,11 @@ class _DrivePageState extends State<DrivePage> {
     ('policy', '推理', '步态策略，直连 rt/lowcmd，没有高层动作'),
   ];
 
-  Widget _controllerRow(GatewayState? st, AppState app, {bool compact = false}) {
+  Widget _controllerRow(
+    GatewayState? st,
+    AppState app, {
+    bool compact = false,
+  }) {
     final current = st?.link.controller ?? '';
     final available = st?.link.available ?? const <String>[];
     final canSwitch = (st?.mode ?? 'off') == 'manual';
@@ -288,23 +296,26 @@ class _DrivePageState extends State<DrivePage> {
         for (final (kind, short, _) in _controllers)
           Padding(
             padding: const EdgeInsets.only(right: 6),
-                    child: _ctrlChip(
+            child: _ctrlChip(
               kind: kind,
               short: short,
               on: current == kind,
               // available 空 = 老版本服务端没报，别拦着用户（网关那边还会校验）。
-              usable: canSwitch && (available.isEmpty || available.contains(kind)),
+              usable:
+                  canSwitch && (available.isEmpty || available.contains(kind)),
               onTap: () => _askController(context, app, kind),
             ),
           ),
       ],
     );
     if (compact) {
-      return Row(children: [
-        const Kicker('控制端', color: C.faint),
-        const SizedBox(width: 10),
-        Expanded(child: row),
-      ]);
+      return Row(
+        children: [
+          const Kicker('控制端', color: C.faint),
+          const SizedBox(width: 10),
+          Expanded(child: row),
+        ],
+      );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -314,9 +325,7 @@ class _DrivePageState extends State<DrivePage> {
         row,
         const SizedBox(height: 6),
         Text(
-          canSwitch
-              ? '换控制端会重启服务端：狗先蹲下再站起来，操作权要重新取'
-              : '切到手动遥控之后才能换控制端',
+          canSwitch ? '换控制端会重启服务端：狗先蹲下再站起来，操作权要重新取' : '切到手动遥控之后才能换控制端',
           style: const TextStyle(fontSize: 10, color: C.faint, height: 1.4),
         ),
       ],
@@ -339,31 +348,39 @@ class _DrivePageState extends State<DrivePage> {
       selected: on,
       label: '控制端-$short',
       child: InkWell(
-      borderRadius: BorderRadius.circular(R.inner),
-      onTap: usable ? onTap : null,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(
-          color: on ? C.accent.withValues(alpha: 0.16) : C.surfaceHi,
-          borderRadius: BorderRadius.circular(R.inner),
-          border: Border.all(
-              color: on ? C.accent.withValues(alpha: 0.5) : C.line),
+        borderRadius: BorderRadius.circular(R.inner),
+        onTap: usable ? onTap : null,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: on ? C.accent.withValues(alpha: 0.16) : C.surfaceHi,
+            borderRadius: BorderRadius.circular(R.inner),
+            border: Border.all(
+              color: on ? C.accent.withValues(alpha: 0.5) : C.line,
+            ),
+          ),
+          child: Text(
+            short,
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
         ),
-        child: Text(short,
-            style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600,
-                color: color)),
-      ),
       ),
     );
   }
 
   Future<void> _askController(
-      BuildContext context, AppState app, String kind) async {
+    BuildContext context,
+    AppState app,
+    String kind,
+  ) async {
     final st = app.client.state.value;
     if (st?.link.controller == kind) return;
     final label = _controllers
-        .firstWhere((c) => c.$1 == kind,
-            orElse: () => (kind, kind, ''))
+        .firstWhere((c) => c.$1 == kind, orElse: () => (kind, kind, ''))
         .$2;
     final ok = await showDialog<bool>(
       context: context,
@@ -471,65 +488,95 @@ class _DrivePageState extends State<DrivePage> {
   //
   // 现在按「手的位置」分栏：左手推平移在最左，右手推转向在最右，中间留给
   // 画面和速度读数。宽度不够时优先压画面，摇杆和动作列保持最小可用尺寸。
-  Widget _landscape(GatewayState? st, AppState app) {
+  Widget _landscape(GatewayState? st, AppState app, double total) {
     final modeOk = (st?.mode ?? 'off') == 'manual';
     final canSend = modeOk && (st?.lease.mine ?? false);
+    // 摇杆列按屏宽取比例，不写死 200。667×375 这种小横屏上两列各吃 200 pt，
+    // 中间画面只剩 135 pt —— 大号速度读数（38 pt 字号）直接被挤出黄黑条纹，
+    // 摇杆也只有 135 pt 好放，正是「太紧凑」的由来。
+    final railW = total >= 760 ? 108.0 : 96.0;
+    final padW = ((total - railW - 24) * 0.26).clamp(104.0, 196.0);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _padColumn(app, st, turn: false, canSend: canSend, modeOk: modeOk),
+        _padColumn(
+          app,
+          st,
+          width: padW,
+          turn: false,
+          canSend: canSend,
+          modeOk: modeOk,
+        ),
         const SizedBox(width: 8),
         Expanded(child: _stage(st, app, compact: true, pads: false)),
         const SizedBox(width: 8),
-        _padColumn(app, st, turn: true, canSend: canSend, modeOk: modeOk),
+        _padColumn(
+          app,
+          st,
+          width: padW,
+          turn: true,
+          canSend: canSend,
+          modeOk: modeOk,
+        ),
         const SizedBox(width: 8),
-        SizedBox(width: 100, child: _actionRail(app, st)),
+        SizedBox(width: railW, child: _actionRail(app, st)),
       ],
     );
   }
 
   // 单侧摇杆列。宽度跟着屏宽走但有上下限：太窄拇指放不进去，太宽画面就没地方了。
-  Widget _padColumn(AppState app, GatewayState? st,
-      {required bool turn, required bool canSend, required bool modeOk}) {
-    return LayoutBuilder(builder: (context, box) {
-      final width = (box.maxWidth.isFinite ? box.maxWidth : 176.0);
-      final size = math.min(width, box.maxHeight - 30).clamp(96.0, 200.0);
-      return SizedBox(
-        width: width.clamp(120.0, 200.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.end,
-          children: [
-            if (!modeOk)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: StatusChip(
-                  text: st == null ? '未连接' : _modeLabel(st.mode),
-                  color: C.warn,
-                  icon: Icons.info_outline,
-                  dense: true,
+  Widget _padColumn(
+    AppState app,
+    GatewayState? st, {
+    required double width,
+    required bool turn,
+    required bool canSend,
+    required bool modeOk,
+  }) {
+    return LayoutBuilder(
+      builder: (context, box) {
+        // 摇杆吃到列宽为止，再受高度限制。以前这里又把宽度 clamp 到 200，
+        // 结果小横屏上尺寸长期贴在 96 的下限，拇指按着一半在圈外。
+        final size = math
+            .min(width - 8, box.maxHeight - (modeOk ? 12 : 44))
+            .clamp(96.0, 196.0);
+        return SizedBox(
+          width: width,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              if (!modeOk)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: StatusChip(
+                    text: st == null ? '未连接' : _modeLabel(st.mode),
+                    color: C.warn,
+                    icon: Icons.info_outline,
+                    dense: true,
+                  ),
+                ),
+              Opacity(
+                opacity: canSend ? 1 : 0.45,
+                child: Joystick(
+                  size: size,
+                  label: turn ? '转向' : '平移',
+                  color: turn ? C.info : C.accent,
+                  onChanged: (v) {
+                    if (turn) {
+                      _turn = v;
+                    } else {
+                      _move = v;
+                    }
+                    _emitTouch();
+                  },
                 ),
               ),
-            Opacity(
-              opacity: canSend ? 1 : 0.45,
-              child: Joystick(
-                size: size,
-                label: turn ? '转向' : '平移',
-                color: turn ? C.info : C.accent,
-                onChanged: (v) {
-                  if (turn) {
-                    _turn = v;
-                  } else {
-                    _move = v;
-                  }
-                  _emitTouch();
-                },
-              ),
-            ),
-            const SizedBox(height: 6),
-          ],
-        ),
-      );
-    });
+              const SizedBox(height: 6),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   // 右侧动作列：四个常用动作 + 「更多」。
@@ -570,98 +617,243 @@ class _DrivePageState extends State<DrivePage> {
           child: SingleChildScrollView(
             child: Column(
               children: [
-                btn('起立', Icons.arrow_upward, C.accentText,
-                    canAct ? () => app.send('stand') : null),
-                btn('蹲下', Icons.arrow_downward, null,
-                    canAct ? () => app.send('crouch', {'depth': 0.08}) : null),
-                btn('停', Icons.stop, C.warn,
-                    canAct ? () => app.send('freeze') : null),
-                btn('步态', Icons.swap_horiz, C.info,
-                    canAct ? () => app.send('gait') : null),
+                btn(
+                  '起立',
+                  Icons.arrow_upward,
+                  C.accentText,
+                  canAct ? () => app.send('stand') : null,
+                ),
+                btn(
+                  '蹲下',
+                  Icons.arrow_downward,
+                  null,
+                  canAct ? () => app.send('crouch', {'depth': 0.08}) : null,
+                ),
+                btn(
+                  '停',
+                  Icons.stop,
+                  C.warn,
+                  canAct ? () => app.send('freeze') : null,
+                ),
+                btn(
+                  '步态',
+                  Icons.swap_horiz,
+                  C.info,
+                  canAct ? () => app.send('gait') : null,
+                ),
               ],
             ),
           ),
         ),
-        btn('更多', Icons.apps, null,
-            canAct ? () => _showActions(app, st) : null),
+        btn(
+          '更多',
+          Icons.apps,
+          null,
+          canAct ? () => _showActions(app, st) : null,
+        ),
       ],
     );
   }
 
-  // 「更多」弹层：官方控制端的姿态与表演动作。
+  // 「更多」弹层：官方动作，按姿态 / 表演 / 高风险分三组。
   //
-  // 列表来自 server 的白名单（`quadruped/comm/server.py` 的 `ACTS`），那边
-  // 刻意排除了空翻、倒立、直立行走 —— 这些动作落地姿态不可控，在真机上
-  // 没有护具和场地不该给一个按钮就能触发。
+  // 清单来自服务端 welcome 的 `acts`（`quadruped/comm/acts.py`），客户端不硬编码：
+  // 那边改一处，这里自动跟着变。`enabled=false` 的空翻、倒立灰着排在最下面，
+  // 点了只解释为什么不能点 —— 界面要完整，但不能给一个按一下就摔的按钮。
   void _showActions(AppState app, GatewayState? st) {
-    const acts = <(String, String, IconData)>[
-      ('Stretch', '伸懒腰', Icons.accessibility_new),
-      ('Heart', '比心', Icons.favorite),
-      ('Content', '开心', Icons.sentiment_satisfied),
-      ('Pose', '摆姿势', Icons.camera_front),
-      ('Scrape', '刨地', Icons.grass),
-      ('Sit', '坐下', Icons.chair),
-      ('RiseSit', '从坐姿起立', Icons.event_seat),
-      ('BalanceStand', '平衡站立', Icons.accessibility),
-      ('RecoveryStand', '恢复站立', Icons.restart_alt),
-      ('StandUp', '站起', Icons.arrow_circle_up),
-      ('StandDown', '趴下', Icons.arrow_circle_down),
+    final catalog = app.client.acts.value;
+    final acts = catalog.isEmpty ? _fallbackActs : catalog;
+    final pose = [
+      for (final a in acts)
+        if (a.group != 'show' && a.group != 'risk') a,
     ];
+    final shows = [
+      for (final a in acts)
+        if (a.group == 'show') a,
+    ];
+    final risks = [
+      for (final a in acts)
+        if (a.group == 'risk') a,
+    ];
+
+    final w = MediaQuery.sizeOf(context).width;
+    final perRow = w >= 720 ? 5 : (w >= 480 ? 4 : 3);
+    final itemW = ((w - 32) - (perRow - 1) * 8) / perRow;
+
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: C.surface,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(R.ctl)),
       ),
       builder: (ctx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+        Widget tile(ActSpec a) => SizedBox(
+          width: itemW,
+          child: ActionButton(
+            label: a.label,
+            icon: _actIcon(a.name),
+            muted: !a.enabled,
+            onPressed: () {
+              if (!a.enabled) {
+                _explainLocked(ctx, a);
+                return;
+              }
+              Navigator.of(ctx).pop();
+              app.send('act', {'name': a.name});
+            },
+          ),
+        );
+
+        Widget group(String title, List<ActSpec> list, {String note = ''}) {
+          if (list.isEmpty) return const SizedBox.shrink();
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 14),
             child: Column(
-              mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
                   children: [
-                    Text('官方动作',
-                        style: TextStyle(
-                            color: C.text, fontWeight: FontWeight.w700, fontSize: 15)),
-                    const SizedBox(width: 8),
-                    Text('点了立即执行',
-                        style: TextStyle(color: C.dim, fontSize: 11)),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: [
-                    for (final (name, label, icon) in acts)
-                      SizedBox(
-                        width: 104,
-                        child: ActionButton(
-                          label: label,
-                          icon: icon,
-                          onPressed: () {
-                            Navigator.of(ctx).pop();
-                            app.send('act', {'name': name});
-                          },
+                    Kicker(title, color: C.faint),
+                    if (note.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          note,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 10.5,
+                            color: C.faint,
+                          ),
                         ),
                       ),
+                    ],
                   ],
                 ),
-                const SizedBox(height: 10),
-                Text(
-                  '空翻、倒立、直立行走没有放进来 —— 落地姿态不可控，请用官方 App。',
-                  style: TextStyle(color: C.dim, fontSize: 11),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [for (final a in list) tile(a)],
                 ),
               ],
+            ),
+          );
+        }
+
+        return SafeArea(
+          child: ConstrainedBox(
+            // 横屏手机只有 400 pt 高，不限高的话弹层会被内容顶出屏幕，
+            // 底下的按钮点不到。留 18% 给背后的页面，知道自己还在遥控页。
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(ctx).height * 0.82,
+            ),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        '官方动作',
+                        style: TextStyle(
+                          color: C.text,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 15,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '点了立即执行',
+                        style: TextStyle(color: C.dim, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  group('姿态', pose),
+                  group('表演', shows),
+                  group('高风险 · 默认关闭', risks, note: '场地不够就是摔机，这里只展示不执行'),
+                  Text(
+                    '灰色的动作在服务端就被拦住了：空翻、倒立落地姿态不可控。\n'
+                    '要真跑这些，用官方 App —— 那边默认你有场地和护具。',
+                    style: TextStyle(color: C.dim, fontSize: 11, height: 1.6),
+                  ),
+                ],
+              ),
             ),
           ),
         );
       },
     );
   }
+
+  // 灰色动作点下去只解释原因，不发命令。
+  void _explainLocked(BuildContext ctx, ActSpec a) {
+    showDialog<void>(
+      context: ctx,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: C.surface,
+        title: Text(a.label, style: const TextStyle(fontSize: 16)),
+        content: Text(
+          '${a.why.isEmpty ? '落地姿态不可控' : a.why}。\n\n'
+          '这个动作在客户端里是关的：没有护具和足够空间时，一次失败就是摔机。'
+          '要跑请用官方 App。',
+          style: const TextStyle(fontSize: 12.5, color: C.dim, height: 1.6),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dctx).pop(),
+            child: const Text('知道了', style: TextStyle(color: C.dim)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 动作名 → 图标。名字是 `SportClient` 的方法名，换不了，所以按名字认。
+  static IconData _actIcon(String name) => switch (name) {
+    'StandUp' => Icons.arrow_circle_up,
+    'StandDown' => Icons.arrow_circle_down,
+    'BalanceStand' => Icons.accessibility,
+    'RecoveryStand' => Icons.restart_alt,
+    'Sit' => Icons.chair,
+    'RiseSit' => Icons.event_seat,
+    'StopMove' => Icons.pan_tool_alt_outlined,
+    'Stretch' => Icons.accessibility_new,
+    'Heart' => Icons.favorite,
+    'Content' => Icons.sentiment_satisfied,
+    'Pose' => Icons.camera_front,
+    'Scrape' => Icons.grass,
+    'FrontFlip' => Icons.rotate_right,
+    'BackFlip' => Icons.rotate_left,
+    'LeftFlip' => Icons.u_turn_left,
+    'HandStand' => Icons.filter_hdr,
+    'WalkUpright' => Icons.man,
+    'CrossStep' => Icons.directions_walk,
+    'FreeJump' => Icons.bolt,
+    'FreeBound' => Icons.directions_run,
+    'Dance1' || 'Dance2' => Icons.music_note,
+    _ => Icons.play_arrow,
+  };
+
+  // 老服务端不发 `acts` 时的兜底，跟服务端那份可执行清单一致。
+  static const _fallbackActs = <ActSpec>[
+    ActSpec(name: 'StandUp', label: '站起'),
+    ActSpec(name: 'StandDown', label: '趴下'),
+    ActSpec(name: 'BalanceStand', label: '平衡站立'),
+    ActSpec(name: 'RecoveryStand', label: '恢复站立'),
+    ActSpec(name: 'Sit', label: '坐下'),
+    ActSpec(name: 'RiseSit', label: '从坐姿起立'),
+    ActSpec(name: 'StopMove', label: '停住'),
+    ActSpec(name: 'Stretch', label: '伸懒腰', group: 'show'),
+    ActSpec(name: 'Heart', label: '比心', group: 'show'),
+    ActSpec(name: 'Content', label: '开心', group: 'show'),
+    ActSpec(name: 'Pose', label: '摆姿势', group: 'show'),
+    ActSpec(name: 'Scrape', label: '刨地', group: 'show'),
+  ];
 
   Widget _strip(GatewayState? st) {
     // 手机上这一条只能放五个格子：六个会把「操作权」那一格挤到屏幕外，
@@ -682,11 +874,7 @@ class _DrivePageState extends State<DrivePage> {
       ),
       // 仿真报的步态名是一长句（「机械（标准小跑，同官方灵动）」），
       // 整句塞进状态条会把它撑到屏幕外，只留括号前那一段。
-      MetricTile(
-        label: '步态',
-        value: _shortGait(st?.robot.gait),
-        width: 96,
-      ),
+      MetricTile(label: '步态', value: _shortGait(st?.robot.gait), width: 96),
       MetricTile(
         label: '姿态',
         value: st?.robot.rpy == null
@@ -743,15 +931,23 @@ class _DrivePageState extends State<DrivePage> {
   // 背景只铺在这一块，不铺整页：左右两栏是状态卡片，字压在图上读不清；而摇杆
   // 区本来就是留白的，铺一张画面正好。主视图铺满、小视图缩到右上角，两者共用
   // 同一个源，切换只改尺寸。
-  Widget _stage(GatewayState? st, AppState app,
-      {bool compact = false, bool pads = true}) {
+  Widget _stage(
+    GatewayState? st,
+    AppState app, {
+    bool compact = false,
+    bool pads = true,
+  }) {
     return Stack(
       children: [
         Positioned.fill(child: _backdrop(st, app)),
         if (pads)
           Positioned.fill(
-            child: _pads(st, app, withReadout: true,
-                maxSize: compact ? 168 : 248),
+            child: _pads(
+              st,
+              app,
+              withReadout: true,
+              maxSize: compact ? 168 : 248,
+            ),
           )
         else
           // 横屏把两个摇杆挪到画面两侧之后，读数得单独摆回画面中央，
@@ -761,11 +957,7 @@ class _DrivePageState extends State<DrivePage> {
               child: _speedReadout(st, app, (st?.mode ?? 'off') == 'manual'),
             ),
           ),
-        Positioned(
-          top: 0,
-          left: 0,
-          child: _bgControls(app),
-        ),
+        Positioned(top: 0, left: 0, child: _bgControls(app)),
       ],
     );
   }
@@ -782,10 +974,11 @@ class _DrivePageState extends State<DrivePage> {
             ? _radarView(app, main: !small)
             : _cameraView(st, app, showLabel: !small);
         final shade = Colors.black.withValues(
-            // 压暗只压到「数字还能读」，不压到「画面看不见」。0.42 时仿真
-            // 场景本就偏暗，叠上去整块接近纯黑，用户以为相机没画面。
-            // 数字可读性另外用描边保证（见 _speedReadout）。
-            alpha: small ? 0.10 : (src == 'radar' ? 0.18 : 0.16));
+          // 压暗只压到「数字还能读」，不压到「画面看不见」。0.42 时仿真
+          // 场景本就偏暗，叠上去整块接近纯黑，用户以为相机没画面。
+          // 数字可读性另外用描边保证（见 _speedReadout）。
+          alpha: small ? 0.10 : (src == 'radar' ? 0.18 : 0.16),
+        );
 
         if (!small) {
           return Stack(
@@ -829,7 +1022,9 @@ class _DrivePageState extends State<DrivePage> {
                       bottom: 5,
                       child: Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 6, vertical: 2),
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.black.withValues(alpha: 0.55),
                           borderRadius: BorderRadius.circular(R.card),
@@ -837,7 +1032,9 @@ class _DrivePageState extends State<DrivePage> {
                         child: Text(
                           src == 'radar' ? '雷达' : '画面',
                           style: const TextStyle(
-                              fontSize: 9, color: Colors.white70),
+                            fontSize: 9,
+                            color: Colors.white70,
+                          ),
                         ),
                       ),
                     ),
@@ -887,11 +1084,16 @@ class _DrivePageState extends State<DrivePage> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.broken_image_outlined,
-                          size: 22, color: C.faint),
+                      const Icon(
+                        Icons.broken_image_outlined,
+                        size: 22,
+                        color: C.faint,
+                      ),
                       const SizedBox(height: 6),
-                      const Text('这一帧解不出来',
-                          style: TextStyle(fontSize: 11.5, color: C.dim)),
+                      const Text(
+                        '这一帧解不出来',
+                        style: TextStyle(fontSize: 11.5, color: C.dim),
+                      ),
                       const SizedBox(height: 2),
                       Text(
                         error.toString().split('\n').first,
@@ -912,8 +1114,10 @@ class _DrivePageState extends State<DrivePage> {
                 right: 6,
                 top: 5,
                 child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.5),
                     borderRadius: BorderRadius.circular(R.card),
@@ -966,7 +1170,12 @@ class _DrivePageState extends State<DrivePage> {
               // 主视图：雷达画大、贴底摆。居中的话正撞上大号速度读数，
               // 「0.00」会压在「0.82」上，两个数字都读不出来。
               return Padding(
-                padding: EdgeInsets.fromLTRB(10, main ? 26 : 8, 10, main ? 8 : 8),
+                padding: EdgeInsets.fromLTRB(
+                  10,
+                  main ? 26 : 8,
+                  10,
+                  main ? 8 : 8,
+                ),
                 // 主视图把它压淡：雷达是「余光里的障碍分布」，不是主角。
                 // 全亮度时它和大号速度读数抢同一块地方，两组数字互相搅。
                 child: Opacity(
@@ -997,18 +1206,24 @@ class _DrivePageState extends State<DrivePage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.image_not_supported_outlined, size: 20,
-              color: C.faint),
+          const Icon(
+            Icons.image_not_supported_outlined,
+            size: 20,
+            color: C.faint,
+          ),
           const SizedBox(height: 7),
-          Text(title,
-              style: const TextStyle(fontSize: 11.5, color: C.dim),
-              textAlign: TextAlign.center),
+          Text(
+            title,
+            style: const TextStyle(fontSize: 11.5, color: C.dim),
+            textAlign: TextAlign.center,
+          ),
           if (note != null) ...[
             const SizedBox(height: 4),
-            Text(note,
-                style: const TextStyle(fontSize: 10, color: C.faint,
-                    height: 1.4),
-                textAlign: TextAlign.center),
+            Text(
+              note,
+              style: const TextStyle(fontSize: 10, color: C.faint, height: 1.4),
+              textAlign: TextAlign.center,
+            ),
           ],
         ],
       ),
@@ -1047,8 +1262,12 @@ class _DrivePageState extends State<DrivePage> {
                 s.save();
               }),
               if (s.bgSource != 'none') ...[
-                Container(width: 1, height: 14,
-                    color: C.line, margin: const EdgeInsets.symmetric(horizontal: 3)),
+                Container(
+                  width: 1,
+                  height: 14,
+                  color: C.line,
+                  margin: const EdgeInsets.symmetric(horizontal: 3),
+                ),
                 InkWell(
                   borderRadius: BorderRadius.circular(R.card),
                   onTap: () {
@@ -1059,7 +1278,9 @@ class _DrivePageState extends State<DrivePage> {
                     message: s.bgSize == 'main' ? '切成小视图' : '切成主视图',
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 4),
+                        horizontal: 6,
+                        vertical: 4,
+                      ),
                       child: Icon(
                         s.bgSize == 'main'
                             ? Icons.fullscreen_exit
@@ -1088,10 +1309,14 @@ class _DrivePageState extends State<DrivePage> {
           color: on ? C.accent.withValues(alpha: 0.18) : Colors.transparent,
           borderRadius: BorderRadius.circular(R.card),
         ),
-        child: Text(label,
-            style: TextStyle(fontSize: 10.5,
-                fontWeight: FontWeight.w600,
-                color: on ? C.accentText : C.faint)),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 10.5,
+            fontWeight: FontWeight.w600,
+            color: on ? C.accentText : C.faint,
+          ),
+        ),
       ),
     );
   }
@@ -1101,83 +1326,91 @@ class _DrivePageState extends State<DrivePage> {
   //
   // 摇杆靠下摆（拇指区），上面空出来的地方在宽屏上放速度读数：遥控时眼睛看的是
   // 「多快、往哪」，不是三个坐标轴的原始值。
-  Widget _pads(GatewayState? st, AppState app,
-      {bool withReadout = false, double maxSize = 248}) {
+  Widget _pads(
+    GatewayState? st,
+    AppState app, {
+    bool withReadout = false,
+    double maxSize = 248,
+  }) {
     // 能推（模式对）和能发（有操作权）是两件事：没操作权时摇杆照样能拖，
     // 但一个字节都发不出去。所以视觉上要区分，否则「拖了没反应」看起来像坏了。
     final modeOk = (st?.mode ?? 'off') == 'manual';
     final canSend = modeOk && (st?.lease.mine ?? false);
     final enabled = modeOk;
-    return LayoutBuilder(builder: (context, box) {
-      // maxSize 是上限，不是目标：横屏主区又宽又矮，按 min(宽/2, 高) 算出来
-      // 会顶到 248，把读数整块挤掉（只剩 32 pt，低于 70 的显示门槛）。
-      final side =
-          math.min(math.min(box.maxWidth / 2 - 24, box.maxHeight - 20), maxSize);
-      final size = side.clamp(96.0, maxSize);
-      // 舞台太矮时（360×640，扣掉悬浮底栏只剩 200 pt）大号读数连一行都放不下。
-      // 这时候摇杆是唯一要紧的东西，读数整个让位 —— 硬塞进去的结果是整列溢出，
-      // 把摇杆顶出画面。
-      // 判据是「摇杆占完之后还剩多少」，不是舞台多高：摇杆尺寸跟着舞台走，
-      // 同一个舞台高度在不同屏宽下留给读数的空间不一样。实测 360×640 只剩
-      // 45 pt（放不下），414×896 有 274 pt（放得下）。
-      final showReadout = withReadout && box.maxHeight - (size + 6) >= 70;
-      return Column(
-        mainAxisAlignment: MainAxisAlignment.end,
-        children: [
-          if (showReadout)
-            Expanded(child: Center(child: _speedReadout(st, app, enabled))),
-          if (!enabled)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: StatusChip(
-                text: st == null
-                    ? '未连接网关'
-                    : '当前 ${_modeLabel(st.mode)} · 摇杆不下发',
-                color: C.warn,
-                icon: Icons.info_outline,
-                dense: true,
+    return LayoutBuilder(
+      builder: (context, box) {
+        // maxSize 是上限，不是目标：横屏主区又宽又矮，按 min(宽/2, 高) 算出来
+        // 会顶到 248，把读数整块挤掉（只剩 32 pt，低于 70 的显示门槛）。
+        final side = math.min(
+          math.min(box.maxWidth / 2 - 24, box.maxHeight - 20),
+          maxSize,
+        );
+        final size = side.clamp(96.0, maxSize);
+        // 舞台太矮时（360×640，扣掉悬浮底栏只剩 200 pt）大号读数连一行都放不下。
+        // 这时候摇杆是唯一要紧的东西，读数整个让位 —— 硬塞进去的结果是整列溢出，
+        // 把摇杆顶出画面。
+        // 判据是「摇杆占完之后还剩多少」，不是舞台多高：摇杆尺寸跟着舞台走，
+        // 同一个舞台高度在不同屏宽下留给读数的空间不一样。实测 360×640 只剩
+        // 45 pt（放不下），414×896 有 274 pt（放得下）。
+        final showReadout = withReadout && box.maxHeight - (size + 6) >= 70;
+        return Column(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            if (showReadout)
+              Expanded(child: Center(child: _speedReadout(st, app, enabled))),
+            if (!enabled)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: StatusChip(
+                  text: st == null
+                      ? '未连接网关'
+                      : '当前 ${_modeLabel(st.mode)} · 摇杆不下发',
+                  color: C.warn,
+                  icon: Icons.info_outline,
+                  dense: true,
+                ),
+              ),
+            SizedBox(
+              height: size + 6,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: Opacity(
+                      opacity: canSend ? 1 : 0.45,
+                      child: Joystick(
+                        size: size,
+                        label: '平移',
+                        onChanged: (v) {
+                          _move = v;
+                          _emitTouch();
+                        },
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: Opacity(
+                      opacity: canSend ? 1 : 0.45,
+                      child: Joystick(
+                        size: size,
+                        label: '转向 / 前后',
+                        color: C.info,
+                        onChanged: (v) {
+                          _turn = v;
+                          _emitTouch();
+                        },
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-          SizedBox(
-            height: size + 6,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.only(left: 4),
-                  child: Opacity(
-                    opacity: canSend ? 1 : 0.45,
-                    child: Joystick(
-                      size: size,
-                      label: '平移',
-                      onChanged: (v) {
-                        _move = v;
-                        _emitTouch();
-                      },
-                    ),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.only(right: 4),
-                  child: Opacity(
-                    opacity: canSend ? 1 : 0.45,
-                    child: Joystick(
-                      size: size,
-                      label: '转向 / 前后',
-                      color: C.info,
-                      onChanged: (v) {
-                        _turn = v;
-                        _emitTouch();
-                      },
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      );
-    });
+          ],
+        );
+      },
+    );
   }
 
   // 大号速度读数。数字大字、单位小字，加减号保留 —— 「在后退」和「在前进」
@@ -1189,8 +1422,12 @@ class _DrivePageState extends State<DrivePage> {
     Shadow(color: Color(0xE6000000), blurRadius: 3, offset: Offset(0, 1)),
   ];
 
-  Widget _speedReadout(GatewayState? st, AppState app, bool enabled,
-      {double barWidth = 220}) {
+  Widget _speedReadout(
+    GatewayState? st,
+    AppState app,
+    bool enabled, {
+    double barWidth = 220,
+  }) {
     final vx = st?.input.vx ?? 0;
     final max = st?.limits.vx ?? 1.0;
     return ValueListenableBuilder<bool>(
@@ -1198,9 +1435,7 @@ class _DrivePageState extends State<DrivePage> {
       builder: (context, armed, _) {
         final color = !enabled
             ? C.faint
-            : (armed
-                ? (vx.abs() > 0.01 ? C.accentText : C.text)
-                : C.dim);
+            : (armed ? (vx.abs() > 0.01 ? C.accentText : C.text) : C.dim);
         final big = MediaQuery.sizeOf(context).height > 560;
 
         // 「能推」和「能发」是两件事：没操作权时摇杆照样能拖，但一个字节都
@@ -1209,144 +1444,182 @@ class _DrivePageState extends State<DrivePage> {
         final blocked = enabled && !mine;
         final stateText = !enabled
             ? '遥控不可用'
-            : (blocked
-                ? '没有操作权 · 摇杆不下发'
-                : (armed ? '正在下发' : '未使能 · 摇杆无效'));
+            : (blocked ? '没有操作权 · 摇杆不下发' : (armed ? '正在下发' : '未使能 · 摇杆无效'));
 
         // 舞台被挤矮时（360×640 的手机，扣掉悬浮底栏的安全区只剩 200 pt），
         // 这一列写死的内容会溢出 101 px，把摇杆顶出画面。先牺牲次要信息：
         // 高度不够就去掉横移/转向/高度那一行，再不够连进度条一起去掉 ——
         // 只剩「多大速度」和状态，那是遥控时真正要看的。
-        return LayoutBuilder(builder: (context, box) {
-          final room = box.hasBoundedHeight ? box.maxHeight : 400.0;
-          final showBar = room >= 96;
-          final showMini = room >= 150;
-          return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 整行可点：点文字也算「取得控制」，不用非得点中那个小胶囊。
-            GestureDetector(
-              onTap: blocked ? () => app.drive.setArmed(true) : null,
-              behavior: HitTestBehavior.opaque,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Kicker(
-                    stateText,
-                    color: enabled && armed
-                        ? C.accentText
-                        : (blocked ? C.warn : C.dim),
-                    shadows: _onImageShadow,
-                  ),
-                  if (blocked) ...[
-                    const SizedBox(width: 8),
-                    Glass(
-                      radius: R.pill,
-                      alpha: 0.4,
-                      tint: Colors.black,
-                      rim: 0.2,
-                      shadow: false,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      child: const Text('取得控制',
-                          style: TextStyle(
+        return LayoutBuilder(
+          builder: (context, box) {
+            final room = box.hasBoundedHeight ? box.maxHeight : 400.0;
+            // 判据是这一格的宽，不是屏幕宽：667 pt 的小横屏上中间那列只剩
+            // 240 出头，38 pt 字号带单位就溢出，三组小读数也排不下。
+            final narrow = box.maxWidth < 260;
+            final showBar = room >= 96;
+            final showMini = room >= 150 && !narrow;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // 整行可点：点文字也算「取得控制」，不用非得点中那个小胶囊。
+                GestureDetector(
+                  onTap: blocked ? () => app.drive.setArmed(true) : null,
+                  behavior: HitTestBehavior.opaque,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Kicker(
+                        stateText,
+                        color: enabled && armed
+                            ? C.accentText
+                            : (blocked ? C.warn : C.dim),
+                        shadows: _onImageShadow,
+                      ),
+                      if (blocked) ...[
+                        const SizedBox(width: 8),
+                        Glass(
+                          radius: R.pill,
+                          alpha: 0.4,
+                          tint: Colors.black,
+                          rim: 0.2,
+                          shadow: false,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          child: const Text(
+                            '取得控制',
+                            style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
-                              color: C.accentText)),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            // 使能失败/被解除的原因常驻，不靠 3 秒的提示条。
-            ValueListenableBuilder<String?>(
-              valueListenable: app.drive.blockReason,
-              builder: (context, reason, _) => reason == null
-                  ? const SizedBox(height: 2)
-                  : Padding(
-                      padding: const EdgeInsets.only(top: 3, bottom: 2),
-                      child: Text(
-                        reason,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontSize: 10.5,
-                          color: C.danger,
-                          shadows: _onImageShadow,
+                              color: C.accentText,
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-            ),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.baseline,
-              textBaseline: TextBaseline.alphabetic,
-              children: [
-                Text(vx.toStringAsFixed(2),
-                    style: numStyle.copyWith(
-                        fontSize: big ? 54 : 38,
+                      ],
+                    ],
+                  ),
+                ),
+                // 使能失败/被解除的原因常驻，不靠 3 秒的提示条。
+                ValueListenableBuilder<String?>(
+                  valueListenable: app.drive.blockReason,
+                  builder: (context, reason, _) => reason == null
+                      ? const SizedBox(height: 2)
+                      : Padding(
+                          padding: const EdgeInsets.only(top: 3, bottom: 2),
+                          child: Text(
+                            reason,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontSize: 10.5,
+                              color: C.danger,
+                              shadows: _onImageShadow,
+                            ),
+                          ),
+                        ),
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Text(
+                      vx.toStringAsFixed(2),
+                      style: numStyle.copyWith(
+                        fontSize: big ? 54 : (narrow ? 30 : 38),
                         height: 1.05,
                         fontWeight: FontWeight.w700,
                         color: color,
-                        shadows: _onImageShadow)),
-                const SizedBox(width: 5),
-                const Text('m/s',
-                    style: TextStyle(
-                        fontSize: 12, color: C.dim,
-                        shadows: _onImageShadow)),
-              ],
-            ),
-            if (showBar) ...[
-              const SizedBox(height: 10),
-              SizedBox(
-                width: barWidth,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(R.card),
-                  child: SizedBox(
-                    height: 5,
-                    child: Stack(children: [
-                      Container(color: C.surfaceHi),
-                      FractionallySizedBox(
-                        widthFactor: (vx.abs() / (max == 0 ? 1 : max))
-                            .clamp(0.0, 1.0),
-                        alignment: Alignment.centerLeft,
-                        child: Container(
-                            color: vx.isNegative ? C.warn : C.accent),
+                        shadows: _onImageShadow,
                       ),
-                    ]),
-                  ),
+                    ),
+                    const SizedBox(width: 5),
+                    const Text(
+                      'm/s',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: C.dim,
+                        shadows: _onImageShadow,
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ],
-            if (showMini) ...[
-              const SizedBox(height: 12),
-              Row(mainAxisSize: MainAxisSize.min, children: [
-                _mini('横移', st?.input.vy ?? 0, 'm/s'),
-                const SizedBox(width: 18),
-                _mini('转向', st?.input.vyaw ?? 0, 'r/s'),
-                const SizedBox(width: 18),
-                _mini('高度', st?.robot.height ?? 0, 'm', signed: false),
-              ]),
-            ],
-          ],
-          );
-        });
+                if (showBar) ...[
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: barWidth,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(R.card),
+                      child: SizedBox(
+                        height: 5,
+                        child: Stack(
+                          children: [
+                            Container(color: C.surfaceHi),
+                            FractionallySizedBox(
+                              widthFactor: (vx.abs() / (max == 0 ? 1 : max))
+                                  .clamp(0.0, 1.0),
+                              alignment: Alignment.centerLeft,
+                              child: Container(
+                                color: vx.isNegative ? C.warn : C.accent,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+                if (showMini) ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _mini('横移', st?.input.vy ?? 0, 'm/s'),
+                      const SizedBox(width: 18),
+                      _mini('转向', st?.input.vyaw ?? 0, 'r/s'),
+                      const SizedBox(width: 18),
+                      _mini('高度', st?.robot.height ?? 0, 'm', signed: false),
+                    ],
+                  ),
+                ],
+              ],
+            );
+          },
+        );
       },
     );
   }
 
   Widget _mini(String label, double value, String unit, {bool signed = true}) {
-    return Column(mainAxisSize: MainAxisSize.min, children: [
-      Kicker(label, color: C.dim, shadows: _onImageShadow),
-      const SizedBox(height: 2),
-      Row(mainAxisSize: MainAxisSize.min, children: [
-        Text(signed ? value.toStringAsFixed(2) : value.toStringAsFixed(3),
-            style: numStyle.copyWith(fontSize: 15, color: C.text,
-                shadows: _onImageShadow)),
-        const SizedBox(width: 3),
-        Text(unit, style: const TextStyle(fontSize: 9.5, color: C.dim,
-            shadows: _onImageShadow)),
-      ]),
-    ]);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Kicker(label, color: C.dim, shadows: _onImageShadow),
+        const SizedBox(height: 2),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              signed ? value.toStringAsFixed(2) : value.toStringAsFixed(3),
+              style: numStyle.copyWith(
+                fontSize: 15,
+                color: C.text,
+                shadows: _onImageShadow,
+              ),
+            ),
+            const SizedBox(width: 3),
+            Text(
+              unit,
+              style: const TextStyle(
+                fontSize: 9.5,
+                color: C.dim,
+                shadows: _onImageShadow,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
   }
 
   Widget _actions(AppState app, GatewayState? st, {bool grid = false}) {
@@ -1403,9 +1676,7 @@ class _DrivePageState extends State<DrivePage> {
           Wrap(
             spacing: 6,
             runSpacing: 6,
-            children: [
-              for (final w in items) SizedBox(width: 92, child: w),
-            ],
+            children: [for (final w in items) SizedBox(width: 92, child: w)],
           ),
           if (note != null) ...[const SizedBox(height: 6), note],
         ],
@@ -1427,8 +1698,11 @@ class _DrivePageState extends State<DrivePage> {
     );
   }
 
-  Widget _throttle(AppState app, GatewayState? st,
-      {bool withController = false}) {
+  Widget _throttle(
+    AppState app,
+    GatewayState? st, {
+    bool withController = false,
+  }) {
     final mode = st?.mode ?? 'off';
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),

@@ -85,13 +85,26 @@ class _JoystickState extends State<Joystick> {
                 ),
                 if (widget.label.isNotEmpty)
                   Positioned(
+                    left: 0,
+                    right: 0,
                     bottom: 6,
-                    child: Text(
-                      widget.label,
-                      style: const TextStyle(
-                        fontSize: 10,
-                        color: C.faint,
-                        letterSpacing: 0.5,
+                    // 标签长度不可控（「转向 / 前后」这种），Text 会按内容撑开
+                    // 直接画到圆外。给宽度上限 + 缩小，任何标签都不会溢出。
+                    child: Center(
+                      child: SizedBox(
+                        width: widget.size * 0.78,
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            widget.label,
+                            maxLines: 1,
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: C.faint,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -225,7 +238,7 @@ class StepBar extends StatelessWidget {
             child: Padding(
               padding: const EdgeInsets.only(right: 6),
               child: InkWell(
-                borderRadius: BorderRadius.circular(9),
+                borderRadius: BorderRadius.circular(R.ctl),
                 onTap: () => onChanged(v),
                 child: Container(
                   height: 34,
@@ -234,7 +247,7 @@ class StepBar extends StatelessWidget {
                     color: (v - value).abs() < 1e-6
                         ? color.withValues(alpha: 0.16)
                         : C.surfaceHi,
-                    borderRadius: BorderRadius.circular(9),
+                    borderRadius: BorderRadius.circular(R.ctl),
                     border: Border.all(
                       color: (v - value).abs() < 1e-6
                           ? color.withValues(alpha: 0.55)

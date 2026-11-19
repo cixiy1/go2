@@ -69,6 +69,92 @@ http://<网关主机>:8099/?host=192.168.123.1&port=8780&t=123456&tab=vla
 
 ![遥控背景](img/flutter-drive-bg.png)
 
+### 配色与玻璃
+
+色值不是照着 FlClash 的截图调近似值，是取它的派生结果：FlClash 的主题为
+`seededColorScheme(seed: Color(0xFF007AFF), dark)`，用它在本机跑
+`ColorScheme.fromSeed` 得到同一套 surface 色阶：
+
+| 用途 | 色值 | M3 对应 |
+|---|---|---|
+| 页面底 | `#0C0E13` | surfaceContainerLowest |
+| 侧栏 / 顶栏玻璃 | `#282A2F` @ 62% | surfaceContainerHigh |
+| 卡片 | `#1A1B20` | surfaceContainerLow |
+| 卡片上的块 | `#282A2F` | surfaceContainerHigh |
+| 进度槽 / 浮层 | `#33353A` | surfaceContainerHighest |
+| 主色 | `#007AFF` | 种子色本身（不是派生的 `#ADC6FF`） |
+
+色阶整体偏蓝紫，这是种子带过来的；照抄中性灰会「看着差不多但就是不像」。
+
+**主色分两个令牌，别混**（`theme.dart`）：
+
+| 令牌 | 值 | 用在哪 |
+|---|---|---|
+| `C.accent` | `#007AFF` 种子原值 | 实心色块（按钮底、进度条、选中指示） |
+| `C.accentText` | `#6FB4FF` | 深底上的主色**文字与图标** |
+
+`#007AFF` 的蓝光分量低，压在 16% 蓝底上当字用只有 2.5:1 的对比 —— 「连接」
+「手动遥控」「自研」这些看着像没写上去（截图放大后就是一块蓝）。M3 在暗色
+主题把 primary 提到 tone 80 是同一个道理。连接页的主按钮另改成实心主色 +
+白字，这是页面上唯一的主操作，不该靠淡底表达。
+
+玻璃在 `ui/widgets/glass.dart`：半透明填充 + 上缘 0.67 px 高光（`Border.all`，
+`foregroundDecoration` 画，不用 Stack —— 顶栏那种「只有 top 没有 bottom」的
+`Positioned` 里，`StackFit.expand` 会把高度算成 0，整条栏消失）+ `BackdropFilter`。
+
+三条踩过的坑，改之前先看：
+
+1. **`Scaffold` 不能给 `Colors.transparent`。** Web 上 CanvasKit 的底是白画布，
+   `BackdropFilter` 采到那层白，侧栏能亮到 `#4a4d52`。给不透明底色。
+2. **不要给背景加「光晕」当折射源。** 试过两团 alpha 0.12 的蓝紫径向渐变，
+   整块背景被抬成雾灰蓝，卡片和玻璃一起发白 —— 页面像隔着脏玻璃看。FlClash
+   通透是因为背后有 macOS 壁纸，我们没有，就别硬造光源。
+3. **纯色背景上模糊看不出差别**（逐像素比对过开关两版），玻璃的观感靠
+   「比背景亮一档 + 上缘高光」。真要看到模糊，得让背后有内容：遥控页那个
+   压在相机画面上的「相机 / 雷达 / 关」切换条就是。
+
+设置页有「毛玻璃」开关（`settings.glass`），关掉退化成纯填充，布局不变。
+
+### 字体
+
+Flutter Web 的中文是从 `fonts.gstatic.com` 现拉的，首屏那几秒全是方块（实测
+8 秒还没到）。`assets/fonts/` 里是按项目实际用字裁的子集（909 字，三个字重
+共 654 KB），`theme.dart` 里 `fontFamily: 'NotoSansSC'`。要加新文案发现缺字，
+重新跑一遍子集：
+
+```sh
+pyftsubset noto.ttf --text-file=glyphs.txt --output-file=assets/fonts/NotoSansSC-400.ttf
+```
+
+### 遥控页的相机背景
+
+画面「看起来没有」有两个完全不同的原因，先分清再改代码：
+
+| 现象 | 原因 | 怎么确认 |
+|---|---|---|
+| 整块纯黑，左下角没有「机载相机」标签 | 没有帧到 App | `test/video_check.py` 数帧；0 帧再看 `cam_host` 状态里的死因 |
+| 有标签但画面全蓝、或极暗看不清 | 仿真里的狗翻了/画面被压太暗 | 看遥测 rpy：roll≈±180° 就是仰躺，相机朝天 |
+
+无窗口仿真里控制回路只有 5~6 Hz（物理步长 5 ms、DDS 收发和渲染挤在一个进程），
+`BalanceStand` 之后十几秒内必倒，而且倒成仰躺 —— 相机只剩天空。
+
+接线和演示时用 `--pin-base`：**只锁姿态，三个平移方向只给阻尼**。
+
+```sh
+cd quadruped/sim/unitree_mujoco/simulate_python
+SIM_VIDEO_HZ=20 python headless.py --seconds 7200 --pin-base
+```
+
+它解决的是「无窗口仿真控制回路跑不快，狗会翻成仰躺、相机朝天」这一个问题：
+姿态用 PD 力锁住不会翻，机身高度和位移交给腿。**不能把机身吊住** —— 试过用
+3500 N/m 的位置弹簧锁 z，结果腿的承重被卸掉、地面法向力不够、腿一直打滑：
+指令 0.4 m/s，4 秒只挪 2.5 cm，看起来就是「遥控没反应」。
+
+`--pin-hard` 保留硬固定（每步写回位姿），只给逐像素比对截图用。
+
+已知限制：仿真里实际速度比指令慢很多（步态参数和物理参数没对齐），真机按
+控制器算出来的速度走。这条属于控制器/仿真标定，不是客户端的范围。
+
 ## 报文
 
 一条连接上只跑 JSON 文本帧（另有二进制帧专用于画面）。所有 `op` 都是小写。
@@ -82,11 +168,32 @@ http://<网关主机>:8099/?host=192.168.123.1&port=8780&t=123456&tab=vla
 | `setpoint` | `vx` `vy` `vyaw` `source` | 速度设定值。只接受操作权持有者，20 Hz 发 |
 | `cmd` | `cmd` `args` | `stand / uncrouch / crouch / stop / freeze / jump / gait / move` |
 | `mode` | `mode: manual\|vla\|off` | 切模式。立刻回 `switching`，进度靠状态帧和事件 |
+| `controller` | `kind: official\|ours\|policy` | 换高层控制端。只在手动模式下、且服务端是网关起的才行；会重启服务端 |
 | `vla` | `action: start\|stop` | 停止 VLA（等价于切 `off`） |
 | `say` | `text` | 人对 VLA 说一句话（写进它的 stdin） |
 | `camera` | `on` | 是否接收画面 |
 | `log` | `n` | 取 VLA 最近 n 行日志 |
 | `ping` | `ts` | 心跳。App 每 2 秒发一次 |
+
+### 高层控制端
+
+三个控制端是「谁来解释 vx/vy/vyaw」，不是三档速度：
+
+| kind | 名字 | 能力边界 |
+|---|---|---|
+| `official` | 官方 SportClient | 真机原生运动服务，39 个动作；仿真没有 |
+| `ours` | 自研 HighLevelController | 200 Hz 回路 + MPC/WBC，动作最全 |
+| `policy` | 推理模型 | 步态策略直连 `rt/lowcmd`，没有高层动作 |
+
+界面上在遥控页左栏「机器人」卡片里，一行三个芯片（官方 / 自研 / 推理），
+当前那个高亮、这个端点没有的置灰。点一下弹确认 —— 因为要重启服务端。
+
+![高层控制端](img/flutter-drive-controller.png)
+
+`state.link.controller` 是**服务端报的实际值**，`state.link.available` 是这个端点
+能选的列表（仿真只有 ours / policy）。换一个要重启 `comm.server`：狗先蹲下再站起来，
+操作权会被收回。网关自己起的服务端才能换；`--robot attach` 时只能由那个服务端的
+`--client` 决定。
 
 ### 网关 → App
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show Offset;
 
 import 'package:flutter/foundation.dart';
 import 'package:gamepads/gamepads.dart';
@@ -24,6 +25,15 @@ class GamepadSource {
   final ValueNotifier<List<String>> pads = ValueNotifier(const []);
   final ValueNotifier<String?> lastEvent = ValueNotifier(null);
   final ValueNotifier<Map<String, double>> axes = ValueNotifier(const {});
+
+  //: 按下的键，键名用 `GamepadButton.name`（a / b / dpadUp / start …）。
+  //: 手柄页要画「哪个键亮着」，只有轴值和速度意图不够 —— 起立、换步态这些
+  //: 动作不出现在 vx/vy/vyaw 里。
+  final ValueNotifier<Set<String>> pressed = ValueNotifier(const {});
+
+  //: 两个摇杆的归一化位置（x 右正、y 下正）。屏幕坐标系，和 Joystick 一致。
+  final ValueNotifier<Offset> leftStick = ValueNotifier(Offset.zero);
+  final ValueNotifier<Offset> rightStick = ValueNotifier(Offset.zero);
   final ValueNotifier<String> status = ValueNotifier('未检测到手柄');
 
   final StreamController<PadAction> _actions =
@@ -37,6 +47,7 @@ class GamepadSource {
   double _lx = 0;
   double _ly = 0;
   double _rx = 0;
+  double _rY = 0;
 
   bool get connected => pads.value.isNotEmpty;
 
@@ -70,10 +81,13 @@ class GamepadSource {
   }
 
   void _reset() {
-    _lx = _ly = _rx = 0;
+    _lx = _ly = _rx = _rY = 0;
     _down.clear();
     _axisValues.clear();
     axes.value = const {};
+    pressed.value = const {};
+    leftStick.value = Offset.zero;
+    rightStick.value = Offset.zero;
     router.gamepad.value = ControlIntent.zero;
   }
 
@@ -89,19 +103,29 @@ class GamepadSource {
           _ly = e.value;
         case GamepadAxis.rightStickX:
           _rx = e.value;
+        case GamepadAxis.rightStickY:
+          _rY = e.value;
         default:
           break;
       }
+      leftStick.value = Offset(_lx, _ly);
+      rightStick.value = Offset(_rx, _rY);
       // 左摇杆上下 = 前后；左右 = 横移（机器人 vy 正为左，所以取负）。
       router.gamepad.value = router.shaped(_ly, -_lx, _rx, '手柄');
       return;
     }
     final button = e.button;
     if (button == null) return;
-    final pressed = e.value > 0.5;
+    final down = e.value > 0.5;
     final was = _down[button] ?? false;
-    _down[button] = pressed;
-    if (!pressed || was) return;
+    _down[button] = down;
+    // 按钮状态每次都同步给 UI，但动作只在「抬起→按下」那一刻触发一次。
+    final next = <String>{
+      for (final entry in _down.entries)
+        if (entry.value) entry.key.name,
+    };
+    pressed.value = Set.unmodifiable(next);
+    if (!down || was) return;
     final action = switch (button) {
       GamepadButton.start => PadAction.arm,
       GamepadButton.b => PadAction.stop,

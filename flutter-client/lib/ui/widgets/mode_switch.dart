@@ -40,7 +40,7 @@ class ModeSwitch extends StatelessWidget {
                     label: '手动遥控',
                     sub: '摇杆 / 手柄 / 键盘',
                     icon: Icons.sports_esports_outlined,
-                    color: C.accent,
+                    color: C.accentText,
                     selected: mode == 'manual',
                     enabled: !busy,
                     onTap: () => _switch(context, 'manual'),
@@ -113,17 +113,13 @@ class _Tile extends StatelessWidget {
   Widget build(BuildContext context) {
     final active = selected;
     return InkWell(
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(R.ctl),
       onTap: enabled ? onTap : null,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
         decoration: BoxDecoration(
-          color: active ? color.withValues(alpha: 0.12) : C.surfaceHi,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: active ? color.withValues(alpha: 0.5) : C.line,
-            width: active ? 1.2 : 1,
-          ),
+          color: active ? color.withValues(alpha: 0.16) : C.surfaceHi,
+          borderRadius: BorderRadius.circular(R.ctl),
         ),
         child: Row(
           children: [

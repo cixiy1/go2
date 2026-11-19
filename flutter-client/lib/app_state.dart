@@ -140,6 +140,18 @@ class AppState extends ChangeNotifier {
     await drive.emergencyStop();
   }
 
+  // 换高层控制端。代价是服务端重启：狗会先蹲下再站起，操作权会掉。
+  // 所以先把使能关掉，别让最后一帧速度跟着旧控制器走。
+  Future<Map<String, dynamic>> switchController(String kind) async {
+    if (!client.connected) return {'ok': false, 'msg': '还没连上网关'};
+    await drive.setArmed(false);
+    final out = await client.request('controller', {'kind': kind});
+    if (out['ok'] != true) {
+      client.error.value = (out['msg'] ?? '换不了控制端').toString();
+    }
+    return out;
+  }
+
   // 切模式。网关是异步切（park / 起 VLA 要几秒），这里只负责把请求递出去，
   // 进度靠状态帧里的 mode=switching + note 显示。
   Future<Map<String, dynamic>> setMode(String mode) async {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../theme.dart';
+import 'widgets/pad_diagram.dart';
 import 'widgets/panel.dart';
 
 // 手柄页：确认「按下去了没有」。手柄接入在各平台上差异很大，出问题时第一件事
@@ -70,6 +71,37 @@ class GamepadPage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // 手柄俯视图。数字（vx/vy/vyaw）只反映「平移和转向」，看不出是哪个
+          // 键按下的 —— 起立、换步态、跳跃都不在这三个数里。图能直接回答
+          // 「我这一下到底按到没有」。
+          Center(
+            child: ConstrainedBox(
+              constraints:
+                  const BoxConstraints(maxWidth: padDiagramMaxWidth),
+              child: ListenableBuilder(
+                listenable: Listenable.merge([
+                  app.gamepad.pressed,
+                  app.gamepad.leftStick,
+                  app.gamepad.rightStick,
+                  app.gamepad.pads,
+                ]),
+                builder: (context, _) => PadDiagram(
+                  pressed: app.gamepad.pressed.value,
+                  left: app.gamepad.leftStick.value,
+                  right: app.gamepad.rightStick.value,
+                  connected: app.gamepad.connected,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Center(
+            child: Text(
+              '按任意键，「它」就会亮',
+              style: TextStyle(fontSize: 10.5, color: C.faint),
+            ),
+          ),
+          const SizedBox(height: 14),
           ValueListenableBuilder(
             valueListenable: app.router.gamepad,
             builder: (context, intent, _) => Row(
@@ -309,7 +341,7 @@ class _AxisBar extends StatelessWidget {
               height: 8,
               decoration: BoxDecoration(
                 color: right ? C.accent : C.warn,
-                borderRadius: BorderRadius.circular(2),
+                borderRadius: BorderRadius.circular(R.card),
               ),
             ),
           ),
@@ -325,7 +357,7 @@ class _AxisBar extends StatelessWidget {
             child: Container(
               decoration: BoxDecoration(
                 color: C.surfaceHi,
-                borderRadius: BorderRadius.circular(3),
+                borderRadius: BorderRadius.circular(R.card),
               ),
             ),
           ),

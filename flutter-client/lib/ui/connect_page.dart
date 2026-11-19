@@ -182,7 +182,7 @@ class _ConnectPageState extends State<ConnectPage> {
                   builder: (context, phase, _) {
                     final open = phase == LinkPhase.open;
                     return InkWell(
-                      borderRadius: BorderRadius.circular(11),
+                      borderRadius: BorderRadius.circular(R.ctl),
                       onTap: _busy
                           ? null
                           : (open ? () => app.disconnect() : _connect),
@@ -190,15 +190,15 @@ class _ConnectPageState extends State<ConnectPage> {
                         height: 44,
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
+                          // 主操作用实心主色 + 白字。原来是 accent 16% 底
+                          // 配 accent 字，等于蓝底蓝字 —— 截图里看不出有字。
                           color: open
                               ? C.surfaceHi
-                              : C.accent.withValues(alpha: _busy ? 0.08 : 0.16),
-                          borderRadius: BorderRadius.circular(11),
-                          border: Border.all(
-                            color: open
-                                ? C.line
-                                : C.accent.withValues(alpha: 0.45),
-                          ),
+                              : (_busy
+                                  ? C.accent.withValues(alpha: 0.5)
+                                  : C.accent),
+                          borderRadius: BorderRadius.circular(R.ctl),
+                          border: open ? Border.all(color: C.line) : null,
                         ),
                         child: _busy
                             ? const SizedBox(
@@ -214,7 +214,7 @@ class _ConnectPageState extends State<ConnectPage> {
                                 style: TextStyle(
                                   fontSize: 13,
                                   fontWeight: FontWeight.w600,
-                                  color: open ? C.dim : C.accent,
+                                  color: open ? C.dim : Colors.white,
                                 ),
                               ),
                       ),
@@ -322,8 +322,7 @@ class _ConnectPageState extends State<ConnectPage> {
           padding: const EdgeInsets.only(left: 10, right: 4, top: 2, bottom: 2),
           decoration: BoxDecoration(
             color: const Color(0xFF070A0C),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: C.line),
+            borderRadius: BorderRadius.circular(R.inner),
           ),
           child: Row(
             children: [

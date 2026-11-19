@@ -20,11 +20,16 @@ class GatewayClient {
   final ValueNotifier<GatewayState?> state = ValueNotifier(null);
   final ValueNotifier<VlaFrame?> vla = ValueNotifier(null);
   final ValueNotifier<CameraFrame?> frame = ValueNotifier(null);
+  int _frameSeq = 0;
   final ValueNotifier<String?> error = ValueNotifier(null);
   final ValueNotifier<String?> notice = ValueNotifier(null);
   final ValueNotifier<int> chatRev = ValueNotifier(0);
   final ValueNotifier<int> eventRev = ValueNotifier(0);
   final ValueNotifier<double?> rttMs = ValueNotifier(null);
+
+  /// 官方动作目录。服务端在 welcome 里发一次，之后不变 —— 所以不进 state 帧，
+  /// 这里也只更新一次。
+  final ValueNotifier<List<ActSpec>> acts = ValueNotifier(const []);
 
   final List<ChatItem> chat = [];
   final List<GatewayEvent> events = [];
@@ -179,8 +184,9 @@ class GatewayClient {
     if (data is List<int>) {
       final raw = data is Uint8List ? data : Uint8List.fromList(data);
       if (raw.isEmpty) return;
-      // 首字节是来源标记，剩下的是 JPEG。`sublistView` 不复制像素数据。
-      frame.value = CameraFrame(raw[0], Uint8List.sublistView(raw, 1));
+      // 首字节是来源标记，剩下的是 JPEG（宽高顺手从 SOF 段读出来）。
+      // `sublistView` 不复制像素数据。
+      frame.value = CameraFrame.parse(raw, seq: ++_frameSeq);
     }
   }
 
@@ -220,6 +226,8 @@ class GatewayClient {
             last.map((k, v) => MapEntry(k.toString(), v)),
           );
         }
+        // 老服务端没有这个字段，别用空表把上一次拿到的目录冲掉。
+        if (msg['acts'] is List) acts.value = ActSpec.listOf(msg['acts']);
         phase.value = LinkPhase.open;
       case 'state':
         final s = GatewayState.fromJson(msg);

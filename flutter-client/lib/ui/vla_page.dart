@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
@@ -61,11 +63,17 @@ class _VlaPageState extends State<VlaPage> {
           builder: (context, box) {
             final wide = box.maxWidth >= 1120;
             final mid = box.maxWidth >= 760;
+            // 横屏手机（896x414）可用高度只有 300 出头：三列并排时每一列都
+            // 塞不下自己的卡片，逐处加约束只会把溢出从 250 压到 126、再到 27。
+            // 换成「整页滚动 + 每块固定高度」，结构上不留溢出空间。
+            final landscape = !wide && box.maxWidth > box.maxHeight * 1.25;
             return Padding(
-              padding: const EdgeInsets.all(12),
+              padding: EdgeInsets.all(landscape ? 8 : 12),
               child: wide
                   ? _wide(app, st)
-                  : (mid ? _medium(app, st) : _narrow(app, st)),
+                  : landscape
+                      ? _landscape(app, st, box)
+                      : (mid ? _medium(app, st) : _narrow(app, st)),
             );
           },
         );
@@ -89,6 +97,45 @@ class _VlaPageState extends State<VlaPage> {
   }
 
   // -- 中屏：两列 --------------------------------------------------------
+
+  // 横屏：整页滚动，画面给 210、判断给 300，剩下的滚出去看。
+  // 固定高度而不是 Expanded —— Expanded 要求父级高度确定，在滚动视图里会崩。
+  Widget _landscape(AppState app, GatewayState? st, BoxConstraints box) {
+    final h = box.maxHeight;
+    return ListView(
+      padding: EdgeInsets.zero,
+      children: [
+        _topBar(app, st),
+        const SizedBox(height: 10),
+        _metricsStrip(app),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: math.max(224, h * 0.5),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(flex: 3, child: _visionColumn(app, st, compact: true)),
+              const SizedBox(width: 10),
+              Expanded(flex: 2, child: _judgeMini(app, st)),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: math.max(280, h * 0.62),
+          child: _decisionColumn(app, st),
+        ),
+        const SizedBox(height: 10),
+        _inputRow(app, st),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+
+  // 横屏右侧那一列只留判断，不要对话（对话在下面单独一块占满宽）。
+  Widget _judgeMini(AppState app, GatewayState? st) {
+    return _thoughtPanel(app);
+  }
 
   Widget _medium(AppState app, GatewayState? st) {
     return Column(
@@ -249,23 +296,30 @@ class _VlaPageState extends State<VlaPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        ValueListenableBuilder<CameraFrame?>(
-          valueListenable: app.client.frame,
-          builder: (context, frame, _) {
-            return ValueListenableBuilder<VlaFrame?>(
-              valueListenable: app.client.vla,
-              builder: (context, f, _) => CameraPanel(
-                frame: frame?.bytes,
-                aspect: frame?.aspect,
-                frontGap: f?.frontGap,
-                alert: f?.alert ?? false,
-                running: st?.vla.running ?? false,
-              ),
-            );
-          },
+        // Flexible 不是装饰：CameraPanel 内部是 AspectRatio，按宽度算高度。
+        // 在 Column 里当非弹性子节点时它拿到的是无界高度，会按 4:3 撑到 387，
+        // 横屏（总高 302）直接溢出 250。给一个有界高度它才会按比例缩宽度。
+        Flexible(
+          flex: 3,
+          child: ValueListenableBuilder<CameraFrame?>(
+            valueListenable: app.client.frame,
+            builder: (context, frame, _) {
+              return ValueListenableBuilder<VlaFrame?>(
+                valueListenable: app.client.vla,
+                builder: (context, f, _) => CameraPanel(
+                  frame: frame?.bytes,
+                  aspect: frame?.aspect,
+                  frontGap: f?.frontGap,
+                  alert: f?.alert ?? false,
+                  running: st?.vla.running ?? false,
+                ),
+              );
+            },
+          ),
         ),
         const SizedBox(height: 10),
         Expanded(
+          flex: 2,
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -336,9 +390,11 @@ class _VlaPageState extends State<VlaPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _thoughtPanel(app),
+        // 想法面板原来是非弹性子节点：竖屏高度富余时没差别，横屏 302 高
+        // 就顶出去 49。给 flex 2:3，两边按剩余高度分。
+        Flexible(flex: 2, child: _thoughtPanel(app)),
         const SizedBox(height: 10),
-        Expanded(child: _chatPanel(app, st)),
+        Expanded(flex: 3, child: _chatPanel(app, st)),
       ],
     );
   }

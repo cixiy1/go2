@@ -322,6 +322,47 @@ class GatewayState {
   );
 }
 
+// 官方动作目录的一项。服务端在 welcome 里发一份完整的，客户端不自己硬编码 ——
+// 硬编码的那份已经漏过：服务端白名单里有 StopMove，界面上没有。
+//
+// `enabled` 为 false 的动作照样显示，按钮是灰的。空翻、倒立这类落地姿态不可控，
+// 场地不够就是摔机；但界面上得看得见它们的存在，否则像是客户端没做全。
+class ActSpec {
+  const ActSpec({
+    required this.name,
+    required this.label,
+    this.group = 'pose',
+    this.enabled = true,
+    this.why = '',
+  });
+
+  final String name;
+  final String label;
+
+  //: pose 姿态 / show 表演 / risk 高风险（默认不可点）。
+  final String group;
+  final bool enabled;
+
+  //: 备注：为什么不能点，或者执行时的前提。
+  final String why;
+
+  bool get risky => group == 'risk';
+
+  factory ActSpec.fromJson(Map<String, dynamic> j) => ActSpec(
+    name: _s(j['name']),
+    label: _s(j['label'], _s(j['name'])),
+    group: _s(j['group'], 'pose'),
+    // 缺字段时按「能点」处理：老服务端没有这个字段，全都发的是能执行的动作。
+    enabled: j['enabled'] != false,
+    why: _s(j['why']),
+  );
+
+  static List<ActSpec> listOf(dynamic raw) => [
+    for (final item in (raw is List ? raw : const []))
+      if (item is Map) ActSpec.fromJson(_m(item)),
+  ];
+}
+
 class SectorGap {
   const SectorGap(this.name, this.gap, this.top);
   final String name;

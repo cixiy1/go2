@@ -72,6 +72,32 @@ lib/
     widgets/             panel / joystick / vla_visuals / chat_feed / mode_switch
 ```
 
+## 视觉
+
+配色与结构参照 [FlClash](https://github.com/chen08209/FlClash)：近黑底 + 填充式
+灰卡片（不画描边），胶囊 chip，桌面窄图标栏、手机悬浮胶囊底栏。
+
+色值取它的派生结果：FlClash 用 `seededColorScheme(seed: #007AFF, dark)`，这里用
+同一个种子跑 `ColorScheme.fromSeed`，得到页面底 `#0C0E13`、卡片 `#1A1B20`、
+玻璃 `#282A2F`、主色 `#007AFF`。色阶偏蓝紫，是种子带过来的。
+
+侧栏、顶栏、手机底栏是毛玻璃（`ui/widgets/glass.dart`）：半透明填充 + 上缘
+0.67 px 高光 + `BackdropFilter`。设置里有开关，关掉退化为纯填充。
+
+中文字体内嵌（`assets/fonts/`，按项目用字裁到 909 字 / 654 KB）：Flutter Web
+默认从 gstatic 现拉中文，首屏几秒是方块。
+
+遥控页的相机背景会被压暗 0.16，数字另用阴影描边。仿真联调时用
+`headless.py --pin-base` 钉住机身 —— 无窗口仿真控制回路只有 5~6 Hz，狗会倒成
+仰躺，相机朝天就只剩一片蓝。
+
+两处规矩写成了令牌，改皮肤只改一处：
+
+- `theme.dart` 的 `R`：圆角只有三档 —— 容器 16、控件 12、小内块 10、胶囊 999。
+  页面里不许再出现 `circular(13)` 这种随手值。
+- 图标一律放进固定尺寸的盒子（chip 12、按钮 16、卡片标题 14、侧栏 48）。
+  不同图标字形宽度不同，不定宽就一排对不齐；并排按钮的标签也统一字数。
+
 ## 几个刻意的选择
 
 **使能默认关。** 摇杆随便推，没使能不发速度。手机在口袋里被蹭到不该让狗走。

@@ -231,6 +231,7 @@ class ActionButton extends StatelessWidget {
     this.busy = false,
     this.expand = false,
     this.filled = false,
+    this.muted = false,
   });
 
   final String label;
@@ -241,11 +242,15 @@ class ActionButton extends StatelessWidget {
   final bool expand;
   final bool filled;
 
+  //: 看着是禁用的，但点得动。用来放「解释了为什么不能点」的按钮：
+  //: 设成 onPressed=null 就点不动、也就没法告诉人原因。
+  final bool muted;
+
   @override
   Widget build(BuildContext context) {
     final enabled = onPressed != null;
     final bg = !enabled ? C.surfaceHi : (filled ? color : C.surfaceHi);
-    final fg = !enabled ? C.faint : (filled ? Colors.white : color);
+    final fg = !enabled ? C.faint : (muted ? C.faint : (filled ? Colors.white : color));
     final child = Container(
       // 横向 9 而不是 12：遥控页手机上是五个按钮等宽并排，414 pt 宽时每个只有
       // 69 pt，原来的内边距把「起立」那一格撑出 3.3 px（右边缘黄黑条纹）。

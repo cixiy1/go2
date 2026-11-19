@@ -8,12 +8,13 @@ import 'drive_page.dart';
 import 'gamepad_page.dart';
 import 'settings_page.dart';
 import 'vla_page.dart';
+import 'widgets/glass.dart';
 import 'widgets/panel.dart';
 
-// 外壳：一条常驻顶栏 + 侧栏/底栏二选一。
+// 外壳参照 FlClash：桌面是一条窄图标栏 + 顶部标题栏，手机是悬浮的胶囊底栏。
 //
 // 顶栏不随页面变：模式、链路、操作权、急停必须在任何页面都点得到。遥控过程中
-// 最怕的就是「想急停但要先退两页」，这个界面里没有那种路径。
+// 最怕「想急停但先要退两页」，这个界面里没有那种路径。
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
 
@@ -23,12 +24,14 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   static const _tabs = [
-    (icon: Icons.cable_rounded, label: '连接'),
-    (icon: Icons.sports_esports_outlined, label: '遥控'),
-    (icon: Icons.auto_awesome_outlined, label: 'VLA'),
-    (icon: Icons.gamepad_outlined, label: '手柄'),
-    (icon: Icons.tune, label: '设置'),
+    (icon: Icons.cable_rounded, label: '连接', title: '连接网关'),
+    (icon: Icons.sports_esports_outlined, label: '遥控', title: '遥控'),
+    (icon: Icons.auto_awesome_outlined, label: 'VLA', title: 'VLA 自主'),
+    (icon: Icons.gamepad_outlined, label: '手柄', title: '手柄'),
+    (icon: Icons.tune, label: '设置', title: '设置'),
   ];
+
+  late final AppState _app;
 
   @override
   void initState() {
@@ -38,8 +41,6 @@ class _AppShellState extends State<AppShell> {
     _app.client.notice.addListener(_onNotice);
     _app.client.error.addListener(_onError);
   }
-
-  late final AppState _app;
 
   void _onNotice() {
     final text = _app.client.notice.value;
@@ -60,31 +61,22 @@ class _AppShellState extends State<AppShell> {
   }
 
   SnackBar _bar(String text, Color color) => SnackBar(
-    content: Row(
-      children: [
-        Icon(
-          color == C.danger ? Icons.error_outline : Icons.info_outline,
-          size: 16,
-          color: color,
+        content: Row(children: [
+          Icon(color == C.danger ? Icons.error_outline : Icons.info_outline,
+              size: 16, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+              child: Text(text,
+                  style: const TextStyle(fontSize: 12.5, color: C.text))),
+        ]),
+        backgroundColor: C.surfaceMax,
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(16),
+        duration: const Duration(seconds: 3),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
         ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            text,
-            style: const TextStyle(fontSize: 12.5, color: C.text),
-          ),
-        ),
-      ],
-    ),
-    backgroundColor: C.surfaceHi,
-    behavior: SnackBarBehavior.floating,
-    margin: const EdgeInsets.all(14),
-    duration: const Duration(seconds: 3),
-    shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(11),
-      side: BorderSide(color: color.withValues(alpha: 0.4)),
-    ),
-  );
+      );
 
   @override
   void dispose() {
@@ -94,12 +86,12 @@ class _AppShellState extends State<AppShell> {
   }
 
   Widget _page(int index) => switch (index) {
-    0 => const ConnectPage(),
-    1 => const DrivePage(),
-    2 => const VlaPage(),
-    3 => const GamepadPage(),
-    _ => const SettingsPage(),
-  };
+        0 => const ConnectPage(),
+        1 => const DrivePage(),
+        2 => const VlaPage(),
+        3 => const GamepadPage(),
+        _ => const SettingsPage(),
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -107,85 +99,154 @@ class _AppShellState extends State<AppShell> {
     return ValueListenableBuilder<int>(
       valueListenable: app.tab,
       builder: (context, index, _) {
-        return LayoutBuilder(
-          builder: (context, box) {
-            final wide = box.maxWidth >= 900;
-            return Scaffold(
-              body: SafeArea(
-                child: Column(
+        return LayoutBuilder(builder: (context, box) {
+          final wide = box.maxWidth >= 900;
+          // 横屏手机：896x414 这类。宽没到桌面档，但竖排布局在 414 高里塞不下
+          // （指标条 64 + 舞台 + 动作 + 档位），必须换一套横排。
+          final landscape = !wide && box.maxWidth > box.maxHeight * 1.25;
+          return ListenableBuilder(
+            listenable: app.settings,
+            builder: (context, _) {
+              final glass = app.settings.glass;
+              final safeBottom = MediaQuery.paddingOf(context).bottom;
+              // 内容铺到栏底下：玻璃要有东西可折射，否则只是「一块浅一点的
+              // 色块」。代价是每页自己要留出栏的宽度 —— 所以内容用 Padding
+              // 让开，而不是让栏占位把内容挤到一边。
+              final contentPad = wide
+                  ? const EdgeInsets.fromLTRB(86, 76, 12, 12)
+                  : landscape
+                      ? const EdgeInsets.fromLTRB(10, 60, 10, 52)
+                      : EdgeInsets.fromLTRB(10, 72, 10, 88 + safeBottom * 0.4);
+              return Scaffold(
+                // 不能给 transparent：Web 上 CanvasKit 的底是白画布，
+                // BackdropFilter 会采到那层白，玻璃整条发白（试过，侧栏能亮到
+                // #4a4d52）。给不透明底色，ApplicationBackdrop 再盖一层光。
+                backgroundColor: C.bg,
+                body: Stack(
                   children: [
-                    const _TopBar(),
-                    Expanded(
-                      child: Row(
-                        children: [
-                          if (wide) _Rail(index: index, onSelect: app.go),
-                          Expanded(child: ClipRect(child: _page(index))),
-                        ],
+                    Positioned.fill(
+                      child: SafeArea(
+                        bottom: false,
+                        child: Stack(
+                          children: [
+                            Positioned.fill(
+                              child: Padding(
+                                padding: contentPad,
+                                child: ClipRect(child: _page(index)),
+                              ),
+                            ),
+                            if (wide)
+                              Positioned(
+                                left: 8,
+                                top: 8,
+                                bottom: 8,
+                                width: 68,
+                                child: _Rail(
+                                  index: index,
+                                  onSelect: app.go,
+                                  glass: glass,
+                                ),
+                              ),
+                            Positioned(
+                              left: wide ? 86 : 10,
+                              right: wide ? 12 : 10,
+                              top: 8,
+                              child: _TopBar(
+                                title: _tabs[index].title,
+                                glass: glass,
+                                wide: wide,
+                                height: landscape ? 46 : 58,
+                              ),
+                            ),
+                            if (!wide)
+                              Positioned(
+                                left: 10,
+                                right: 10,
+                                bottom: landscape
+                                    ? 6
+                                    : 8 + safeBottom * 0.4,
+                                child: _Dock(
+                                  index: index,
+                                  onSelect: app.go,
+                                  glass: glass,
+                                  height: landscape ? 42 : 58,
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
                     ),
                   ],
                 ),
-              ),
-              bottomNavigationBar: wide
-                  ? null
-                  : _BottomBar(index: index, onSelect: app.go),
-            );
-          },
-        );
+              );
+            },
+          );
+        });
       },
     );
   }
 }
 
+// 桌面侧栏：FlClash 是窄条 + 纯图标，选中态用一块圆角高亮，不画边框。
+// 这一条是毛玻璃 —— FlClash 的侧栏同样浮在内容上，不是把内容推到一边的背景条。
 class _Rail extends StatelessWidget {
-  const _Rail({required this.index, required this.onSelect});
+  const _Rail({
+    required this.index,
+    required this.onSelect,
+    required this.glass,
+  });
   final int index;
   final ValueChanged<int> onSelect;
+  final bool glass;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: 96,
-      decoration: const BoxDecoration(
-        border: Border(right: BorderSide(color: C.line)),
-      ),
+    return Glass(
+      enabled: glass,
+      radius: R.card,
+      // pill 的配方：alpha 0.48，比卡片玻璃更透一点，让底下滚过的画面透出来。
+      alpha: 0.48,
       child: Column(
         children: [
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
+          // 站标：一个圆角方块，和侧栏其他按钮同尺寸。
+          Container(
+            width: 44,
+            height: 44,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: C.accent,
+              borderRadius: BorderRadius.circular(R.ctl),
+            ),
+            child: const Text('G2',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                    letterSpacing: 0.5)),
+          ),
+          const SizedBox(height: 16),
           for (var i = 0; i < _AppShellState._tabs.length; i++)
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(11),
-                onTap: () => onSelect(i),
-                child: Container(
-                  height: 56,
-                  decoration: BoxDecoration(
-                    color: i == index ? C.accent.withValues(alpha: 0.10) : null,
-                    borderRadius: BorderRadius.circular(11),
-                    border: Border.all(
-                      color: i == index
-                          ? C.accent.withValues(alpha: 0.28)
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Tooltip(
+                message: _AppShellState._tabs[i].title,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(R.ctl),
+                  onTap: () => onSelect(i),
+                  child: Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      color: i == index ? C.accent.withValues(alpha: 0.18)
                           : Colors.transparent,
+                      borderRadius: BorderRadius.circular(R.ctl),
                     ),
-                  ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        _AppShellState._tabs[i].icon,
-                        size: 20,
-                        color: i == index ? C.accent : C.dim,
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        _AppShellState._tabs[i].label,
-                        style: TextStyle(
-                          fontSize: 10.5,
-                          color: i == index ? C.accent : C.faint,
-                        ),
-                      ),
-                    ],
+                    child: Icon(
+                      _AppShellState._tabs[i].icon,
+                      size: 21,
+                      color: i == index ? C.accentText : C.dim,
+                    ),
                   ),
                 ),
               ),
@@ -196,47 +257,71 @@ class _Rail extends StatelessWidget {
   }
 }
 
-class _BottomBar extends StatelessWidget {
-  const _BottomBar({required this.index, required this.onSelect});
+// 手机底栏：FlClash 用悬浮胶囊，不贴屏幕边，并且浮在内容上。
+class _Dock extends StatelessWidget {
+  const _Dock({
+    required this.index,
+    required this.onSelect,
+    required this.glass,
+    this.height = 58,
+  });
   final int index;
   final ValueChanged<int> onSelect;
+  final bool glass;
+  final double height;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: C.surface,
-        border: Border(top: BorderSide(color: C.line)),
-      ),
-      child: SafeArea(
-        top: false,
+    return Glass(
+      enabled: glass,
+      radius: R.pill,
+      alpha: 0.66,
+      child: SizedBox(
+        height: height,
         child: Row(
           children: [
             for (var i = 0; i < _AppShellState._tabs.length; i++)
               Expanded(
                 child: InkWell(
+                  borderRadius: BorderRadius.circular(R.pill),
                   onTap: () => onSelect(i),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          _AppShellState._tabs[i].icon,
-                          size: 20,
-                          color: i == index ? C.accent : C.faint,
+                  // 竖屏：图标在上、文字在下。横屏只有 44 高，塞不下两行，
+                  // 改成图标和文字同一行。
+                  child: height < 50
+                      ? Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(_AppShellState._tabs[i].icon,
+                                size: 17,
+                                color: i == index ? C.accentText : C.faint),
+                            const SizedBox(width: 5),
+                            Text(_AppShellState._tabs[i].label,
+                                style: TextStyle(
+                                    fontSize: 10.5,
+                                    fontWeight: i == index
+                                        ? FontWeight.w600
+                                        : FontWeight.w400,
+                                    color:
+                                        i == index ? C.accentText : C.faint)),
+                          ],
+                        )
+                      : Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(_AppShellState._tabs[i].icon,
+                                size: 20,
+                                color: i == index ? C.accentText : C.faint),
+                            const SizedBox(height: 2),
+                            Text(_AppShellState._tabs[i].label,
+                                style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: i == index
+                                        ? FontWeight.w600
+                                        : FontWeight.w400,
+                                    color:
+                                        i == index ? C.accentText : C.faint)),
+                          ],
                         ),
-                        const SizedBox(height: 3),
-                        Text(
-                          _AppShellState._tabs[i].label,
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: i == index ? C.accent : C.faint,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
                 ),
               ),
           ],
@@ -247,98 +332,102 @@ class _BottomBar extends StatelessWidget {
 }
 
 class _TopBar extends StatelessWidget {
-  const _TopBar();
+  const _TopBar({
+    required this.title,
+    required this.glass,
+    required this.wide,
+    this.height = 58,
+  });
+  final String title;
+  final bool glass;
+  final bool wide;
+  //: 横屏手机只有 414 高，58 的顶栏 + 58 的底栏会把内容压到 200 出头。
+  final double height;
 
   String _modeLabel(String mode) => switch (mode) {
-    'manual' => '手动',
-    'vla' => 'VLA 自主',
-    'switching' => '切换中',
-    _ => '待机',
-  };
+        'manual' => '手动',
+        'vla' => 'VLA 自主',
+        'switching' => '切换中',
+        _ => '待机',
+      };
 
   Color _modeColor(String mode) => switch (mode) {
-    'manual' => C.accent,
-    'vla' => C.vio,
-    'switching' => C.warn,
-    _ => C.faint,
-  };
+        'manual' => C.accent,
+        'vla' => C.vio,
+        'switching' => C.warn,
+        _ => C.faint,
+      };
 
   @override
   Widget build(BuildContext context) {
     final app = AppScope.read(context);
-    return Container(
-      height: 56,
-      padding: const EdgeInsets.symmetric(horizontal: 14),
-      decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: C.line)),
-      ),
-      child: Row(
-        children: [
-          const Text(
-            'GO2',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 2.5,
-            ),
-          ),
-          const SizedBox(width: 10),
-          const Text(
-            '遥控台',
-            style: TextStyle(fontSize: 11, color: C.faint, letterSpacing: 1),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: ValueListenableBuilder<GatewayState?>(
-              valueListenable: app.client.state,
-              builder: (context, st, _) {
-                // 手机上顶栏只有 414 px：三个胶囊加一个急停放不下，最后一个
-                // 会被裁掉一半。窄屏只留「模式 + 链路」，操作权在遥控页能看。
-                final narrow = MediaQuery.sizeOf(context).width < 520;
-                return SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      StatusChip(
-                        text: _modeLabel(st?.mode ?? 'off'),
-                        color: _modeColor(st?.mode ?? 'off'),
-                        dense: true,
-                      ),
-                      const SizedBox(width: 6),
-                      _linkChip(app, st),
-                      const SizedBox(width: 6),
-                      // VLA 模式下没有「操作权」这回事 —— 控制权在子进程手里，
-                      // 继续显示「无人控制」会让人以为可以抢过来。
-                      if (!narrow && st != null && st.mode == 'vla')
-                        const StatusChip(
-                            text: 'VLA 接管', color: C.vio, dense: true)
-                      else if (!narrow && st != null && st.mode == 'manual')
+    return Glass(
+      enabled: glass,
+      radius: R.card,
+      child: SizedBox(
+        height: height,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          child: Row(
+            children: [
+              Text(title,
+                  style: const TextStyle(
+                      fontSize: 19,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.2)),
+              const SizedBox(width: 14),
+              Expanded(
+                child: ValueListenableBuilder<GatewayState?>(
+                  valueListenable: app.client.state,
+                  builder: (context, st, _) {
+                    final narrow = !wide || MediaQuery.sizeOf(context).width < 560;
+                    return SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(children: [
                         StatusChip(
-                          text: st.lease.mine
-                              ? '我在控制'
-                              : (st.lease.holder == null ? '无人控制' : '其他设备控制中'),
-                          color: st.lease.mine
-                              ? C.accent
-                              : (st.lease.holder == null ? C.faint : C.warn),
+                          text: _modeLabel(st?.mode ?? 'off'),
+                          color: _modeColor(st?.mode ?? 'off'),
                           dense: true,
                         ),
-                      if (!narrow && st != null && st.link.rttMs != null) ...[
                         const SizedBox(width: 6),
-                        StatusChip(
-                          text: '${st.link.rttMs!.toStringAsFixed(1)} ms',
-                          color: st.link.rttMs! < 30 ? C.faint : C.warn,
-                          dense: true,
-                        ),
-                      ],
-                    ],
-                  ),
-                );
-              },
-            ),
+                        _linkChip(app, st),
+                        if (st != null && st.mode == 'vla') ...[
+                          const SizedBox(width: 6),
+                          const StatusChip(text: 'VLA 接管', color: C.vio,
+                              dense: true),
+                        ] else if (!narrow && st != null && st.mode == 'manual') ...[
+                          const SizedBox(width: 6),
+                          StatusChip(
+                            text: st.lease.mine
+                                ? '我在控制'
+                                : (st.lease.holder == null
+                                    ? '无人控制'
+                                    : '其他设备控制中'),
+                            color: st.lease.mine
+                                ? C.accent
+                                : (st.lease.holder == null ? C.faint : C.warn),
+                            dense: true,
+                            filled: st.lease.mine,
+                          ),
+                        ],
+                        if (!narrow && st != null && st.link.rttMs != null) ...[
+                          const SizedBox(width: 6),
+                          StatusChip(
+                            text: '${st.link.rttMs!.toStringAsFixed(0)} ms',
+                            color: st.link.rttMs! < 30 ? C.dim : C.warn,
+                            dense: true,
+                          ),
+                        ],
+                      ]),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(width: 10),
+              _EstopButton(app: app),
+            ],
           ),
-          const SizedBox(width: 10),
-          _EstopButton(app: app),
-        ],
+        ),
       ),
     );
   }
@@ -348,10 +437,8 @@ class _TopBar extends StatelessWidget {
       valueListenable: app.client.phase,
       builder: (context, phase, _) {
         final (text, color) = switch (phase) {
-          LinkPhase.open => (
-            st?.link.error != null ? '链路异常' : '已连接',
-            st?.link.error != null ? C.warn : C.accent,
-          ),
+          LinkPhase.open => (st?.link.error != null ? '链路异常' : '已连接',
+              st?.link.error != null ? C.warn : C.ok),
           LinkPhase.connecting => ('连接中', C.warn),
           LinkPhase.retrying => ('重连中', C.warn),
           LinkPhase.failed => ('连不上', C.danger),
@@ -363,6 +450,7 @@ class _TopBar extends StatelessWidget {
   }
 }
 
+// 急停：实心红，尺寸比旁边的 chip 大一圈，永远在最右。
 class _EstopButton extends StatelessWidget {
   const _EstopButton({required this.app});
   final AppState app;
@@ -372,47 +460,35 @@ class _EstopButton extends StatelessWidget {
     await app.emergencyStop();
     messenger
       ..removeCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: const Text('已急停：零速 + 停步命令'),
-          backgroundColor: C.surfaceHi,
-          behavior: SnackBarBehavior.floating,
-          margin: const EdgeInsets.all(14),
-          duration: const Duration(seconds: 2),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(11),
-            side: BorderSide(color: C.danger.withValues(alpha: 0.5)),
-          ),
-        ),
-      );
+      ..showSnackBar(SnackBar(
+        content: const Text('已急停：零速 + 停步命令'),
+        backgroundColor: C.surfaceMax,
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(16),
+        duration: const Duration(seconds: 2),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12)),
+      ));
   }
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: BorderRadius.circular(12),
       onTap: () => _hit(context),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
         decoration: BoxDecoration(
-          color: C.danger.withValues(alpha: 0.14),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: C.danger.withValues(alpha: 0.45)),
+          color: C.danger,
+          borderRadius: BorderRadius.circular(12),
         ),
-        child: const Row(
-          children: [
-            Icon(Icons.pan_tool_alt_outlined, size: 15, color: C.danger),
-            SizedBox(width: 6),
-            Text(
-              '急停',
-              style: TextStyle(
-                fontSize: 12,
-                color: C.danger,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
+        child: const Row(children: [
+          Icon(Icons.pan_tool_alt_outlined, size: 15, color: Colors.white),
+          SizedBox(width: 6),
+          Text('急停',
+              style: TextStyle(fontSize: 12.5, color: Colors.white,
+                  fontWeight: FontWeight.w600)),
+        ]),
       ),
     );
   }
