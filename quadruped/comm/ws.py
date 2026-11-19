@@ -116,6 +116,10 @@ class Conn:
         self.closed = False
         self.frag_op = None
         self.frag_buf = b""
+        # 断开原因，给人看的。对端发 CLOSE 和网线被拔都表现为「recv 返回 None」，
+        # 日志里只写「离开」分不清是 App 主动退、还是连接被掐 —— 这两种要查的
+        # 方向完全不同（前者看客户端，后者看网络）。
+        self.bye = ""
 
     # -- 握手 ------------------------------------------------------------
 
@@ -194,6 +198,7 @@ class Conn:
                 raise TimeoutError
         head = _recv_exact(self.sock, 2)
         if head is None:
+            self.bye = self.bye or "对端关闭连接（FIN/EOF）"
             return None
 
         b0, b1 = head[0], head[1]
@@ -212,12 +217,14 @@ class Conn:
                 return None
             n = struct.unpack("!Q", ext)[0]
         if n > MAX_FRAME:
+            self.bye = f"帧过大（{n} > {MAX_FRAME}）"
             return None
         mask = _recv_exact(self.sock, 4) if masked else None
         if masked and mask is None:
             return None
         payload = _recv_exact(self.sock, n) if n else b""
         if payload is None:
+            self.bye = self.bye or "帧读到一半对端断了"
             return None
         if mask:
             payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
@@ -241,7 +248,9 @@ class Conn:
             if opcode == OP_PONG:
                 continue
             if opcode == OP_CLOSE:
-                self.close(*_parse_close(payload))
+                code, why = _parse_close(payload)
+                self.bye = f"客户端关闭 {code}{(' ' + why) if why else ''}"
+                self.close(code, why)
                 return None
             if opcode not in (OP_TEXT, OP_BINARY):
                 self.close(1003, "unsupported opcode")

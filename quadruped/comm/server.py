@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 
+from quadruped.comm.acts import ACTS
 from quadruped.comm.protocol import (
     API_UNSUPPORTED,
     BAD_REQUEST,
@@ -48,22 +49,6 @@ from quadruped.comm.protocol import (
 
 # ---- 命令执行 ----------------------------------------------------------------
 
-
-#: `act` 允许调用的官方动作（`SportClient` 的同名方法）。
-#:
-#: 全部是「腿还在下面撑着」的动作，做完还能接着遥控。刻意排除的：
-#:   FrontFlip / BackFlip / LeftFlip  空翻，落地姿态不可控
-#:   HandStand                        倒立，倒了很难自己起来
-#:   WalkUpright / CrossStep / StaticWalk  单腿或少腿支撑，对地面要求高
-#:   FreeJump / FreeBound / FreeAvoid  自由模式，参数不对会乱蹦
-#: 要玩这些请用官方 App —— 那边有场地和护具的前提假设。
-# `Hello`（api 1016）在 Go2 上实测返回 3104（DDS 超时，对端不响应）——
-# 那是 Go1 的动作。`Sit` / `RiseSit` 实测可用，其余待逐个验。
-ACTS = (
-    "Stretch", "Heart", "Content", "Pose", "Scrape",
-    "Sit", "RiseSit",
-    "StandUp", "StandDown", "BalanceStand", "RecoveryStand", "StopMove",
-)
 
 
 

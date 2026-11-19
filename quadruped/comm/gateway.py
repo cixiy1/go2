@@ -73,6 +73,7 @@ from pathlib import Path
 
 from quadruped.limits import CROUCH_MAX, CROUCH_MIN, VX_MAX, VY_MAX, VYAW_MAX
 from quadruped.comm import ws
+from quadruped.comm.acts import act_catalog
 from quadruped.comm.cam_host import CamHost
 from quadruped.comm.client import RobotError
 from quadruped.comm.protocol import DEFAULT_PORT, DEFAULT_SOCKET
@@ -160,6 +161,10 @@ class Client:
         self.last_seen = time.monotonic()
         self.lease = False
         self._lock = threading.Lock()
+        # 这条连接一共说了几句话、最后一句是什么。断开时打出来，才分得清
+        # 「连上就没动静，几秒后被客户端关掉」和「一直在发命令，突然断网」。
+        self.msgs = 0
+        self.last_op = ""
 
     def send(self, obj: dict) -> None:
         try:
@@ -685,6 +690,8 @@ class Gateway:
             return
         client.last_seen = time.monotonic()
         op = msg.get("op")
+        client.msgs += 1
+        client.last_op = str(op)
         rid = msg.get("id")
 
         if op == "hello":
@@ -709,6 +716,9 @@ class Gateway:
             "cam": self.cam.status(),
                 "vla_last": self.vla_event,
                 "dialog": list(self.vla_replies),
+                # 动作目录只在 welcome 里发一次：它不变，塞进 10 Hz 的
+                # state 只是白占带宽。
+                "acts": act_catalog(),
             })
             self._log(f"{client.name} 接入（{client.addr}，共 {len(self.clients)} 个）")
             return
@@ -834,7 +844,10 @@ class Gateway:
                     got = client.conn.recv(timeout=0.5)
                 except (TimeoutError, socket.timeout):
                     continue
-                except OSError:
+                except OSError as err:
+                    # RST 不返回 None 而是抛异常，原因写在这里才不会变成一句
+                    # 「离开」—— 断在网络上和断在客户端上，要查的东西不同。
+                    client.conn.bye = f"连接异常 {type(err).__name__}: {err}"
                     break
                 if got is None:
                     break
@@ -859,7 +872,9 @@ class Gateway:
         if was_holder:
             self._stop_motion()
             self._drop_lease(f"{client.name} 断开，停车")
-        self._log(f"{client.name} 离开（剩 {len(self.clients)} 个）")
+        why = client.conn.bye or "（未知）"
+        self._log(f"{client.name} 离开（剩 {len(self.clients)} 个）：{why}"
+                  f" · 收过 {client.msgs} 条，最后一条 {client.last_op or '-'}")
 
     # -- 入口 ------------------------------------------------------------
 
