@@ -73,5 +73,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: go2-remote-*.apk
+          # 路径要从仓库根写起。这一步的工作目录是 `$GITHUB_WORKSPACE`，不是上面
+          # 那个 `flutter-client`；只写 `go2-remote-*.apk` 的话 glob 匹配不到任何
+          # 文件，action 不报错，Release 建出来但是空的 —— 2026-11-19 踩过。
+          files: flutter-client/go2-remote-*.apk
           generate_release_notes: true
