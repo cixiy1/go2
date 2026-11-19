@@ -44,10 +44,12 @@ class CamHost:
         self.echo = echo
         self.iface = iface
         self.child: Child | None = None
+        # 雷达单独一个进程。真机上它和相机挤在一起会把画面从 9 fps 压到 0.9 fps：
+        # 点云回调每秒 20 次、全程握 GIL，相机那条 RPC 抢不到。见
+        # `percept/radar_feed.py` 顶部那段实测数据。
+        self.radar_child: Child | None = None
         # 文件名带 pid：同时跑两个网关时不会互相覆盖同一个文件。
         self.stream_path = Path(tempfile.gettempdir()) / f"go2-cam-{os.getpid()}.jpg"
-        # 雷达和相机同一个进程。两者都要 DDS，而 `ChannelFactoryInitialize`
-        # 一进程只能一次 —— 分成两个进程就等于要初始化两遍，第二遍直接抛。
         self.radar_path = Path(tempfile.gettempdir()) / f"go2-radar-{os.getpid()}.json"
 
     def _log(self, msg: str) -> None:
@@ -65,20 +67,35 @@ class CamHost:
         self.radar_path.unlink(missing_ok=True)
         args = [interpreter(), "-m", "quadruped.percept.feed",
                 "--preset", self.preset, "--out", str(self.stream_path),
-                "--hz", f"{self.hz:g}", "--radar-out", str(self.radar_path)]
+                "--hz", f"{self.hz:g}"]
         if self.iface:
             args += ["--iface", self.iface]
         self._log(f"起馈送：{' '.join(args[3:])}")
         self.child = Child(name="cam", args=args, cwd=ROOT,
                            echo=self.echo).start()
+
+        # 仿真没有点云源，雷达只在真机起。
+        if self.preset == "real":
+            rargs = [interpreter(), "-m", "quadruped.percept.radar_feed",
+                     "--preset", self.preset, "--out", str(self.radar_path)]
+            if self.iface:
+                rargs += ["--iface", self.iface]
+            self._log(f"起雷达：{' '.join(rargs[3:])}")
+            self.radar_child = Child(name="radar", args=rargs, cwd=ROOT,
+                                     echo=self.echo).start()
         return {"ok": True, "pid": self.child.pid}
 
     def stop(self) -> None:
-        child = self.child
+        radar, child = self.radar_child, self.child
+        self.radar_child = None
+        self.child = None
+        if radar is not None:
+            radar.stop(grace=STOP_GRACE)
         if child is None:
+            self.stream_path.unlink(missing_ok=True)
+            self.radar_path.unlink(missing_ok=True)
             return
         child.stop(grace=STOP_GRACE)
-        self.child = None
         self.stream_path.unlink(missing_ok=True)
         self.radar_path.unlink(missing_ok=True)
 
@@ -92,7 +109,11 @@ class CamHost:
             return {"running": False,
                     "exit": None if child is None else child.returncode,
                     "note": note}
+        radar = self.radar_child
         return {"running": True, "pid": self.child.pid if self.child else None,
                 "path": str(self.stream_path),
                 "radar": str(self.radar_path),
+                "radar_running": radar.running if radar is not None else False,
+                "radar_note": "" if radar is None or radar.running
+                else (radar.lines[-1] if radar.lines else ""),
                 "uptime": round(time.time() - (self.child.started_at or time.time()), 1)}

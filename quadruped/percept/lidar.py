@@ -144,7 +144,8 @@ class LidarPercept:
     def __init__(self, backend, *, range_max: float = 3.0,
                  yaw_offset: float = 0.0, mount_z: float = 0.0,
                  height_map: bool = True, wait: float = 3.0,
-                 verbose: bool = True):
+                 verbose: bool = True,
+                 cloud_topics: tuple[str, ...] | None = None):
         # 位姿、倾角、速度都从本体遥测来，和 `ProprioPercept` 一模一样。雷达只补
         # 外部几何，不碰这两件事 —— 所以这里直接复用它，不复制一份差分逻辑。
         from quadruped.percept.proprio import ProprioPercept
@@ -155,6 +156,11 @@ class LidarPercept:
         self.mount_z = float(mount_z)
         self.want_height_map = bool(height_map)
         self.verbose = verbose
+        # 订哪几个点云话题。默认两个都订（不同固件发的名字不一样），但两个都
+        # 在发的时候代价翻倍：`PointCloud2.data` 是一长串 uint8，cyclonedds 的
+        # Python 绑定会把它展开成 Python int 列表 —— 11667 个点 × 48 字节就是
+        # 56 万个对象，15 Hz 下光解析就吃掉两个核。只订一个能砍掉大半。
+        self._topics = tuple(cloud_topics) if cloud_topics else CLOUD_TOPICS
 
         self.ok = False                 # 收到过点云没有
         self.clouds = 0
@@ -206,7 +212,7 @@ class LidarPercept:
             # 两个名字都订上。不同固件/不同型号发的话题名不完全一样，只认一个的话
             # 换台机器就「没收到点云」，而原因看起来像雷达坏了。
             # 谁有数据谁写 `_xyz`，两个都有就用后到的（内容一样）。
-            for name in CLOUD_TOPICS:
+            for name in self._topics:
                 try:
                     ChannelSubscriber(name, PointCloud2_).Init(on_cloud, 10)
                     self._sub_ok = True
@@ -518,7 +524,7 @@ def _to_xyz(msg):
     n = int(msg.width) * int(msg.height)
     if step <= 0 or n <= 0:
         raise ValueError(f"点云是空的（{msg.width}x{msg.height}）")
-    raw = np.frombuffer(bytes(bytearray(msg.data)), dtype=np.uint8)
+    raw = np.frombuffer(bytes(msg.data), dtype=np.uint8)
     if raw.size < step * n:
         raise ValueError(f"点云长度不对：{raw.size} < {step}*{n}")
 

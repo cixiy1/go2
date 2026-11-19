@@ -57,6 +57,16 @@ say "3. cyclonedds（唯一的硬骨头）"
 # sdist 也不含 C 源码 —— 它要求系统里先有一份 CycloneDDS >= 0.10 带头文件。
 # 扩展坞自带的是 Unitree 出厂那份，头文件在 dds/ddsrt/ 下（旧布局），
 # 所以默认的 pip install cyclonedds 会停在 `idl/retcode.h: No such file`。
+#
+# 已经按这套装好的机器（见 README「扩展坞部署」）：conda-forge 的
+# cyclonedds-0.10.5 提供 include/idl，系统 /usr/local 提供 libddsc.so.0。
+# 这里只负责把环境指过去，不再重装。
+if [ -d /opt/cyclonedds/include/idl ] && [ -d /opt/cyclonedds/lib ]; then
+    export CYCLONEDDS_HOME=/opt/cyclonedds
+    export LD_LIBRARY_PATH="/opt/cyclonedds/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    echo "  发现 /opt/cyclonedds，CYCLONEDDS_HOME 已指过去"
+fi
+
 if python3 -c "import cyclonedds" 2>/dev/null; then
     echo "  已可导入，跳过"
 else
@@ -91,6 +101,16 @@ cat > "$ENVFILE" <<EOF
 GO2_IFACE=$IFACE
 GO2_GATEWAY_TOKEN=$TOKEN
 EOF
+
+# 绑定的 ABI 必须和运行时库对上。`/opt/cyclonedds` 那套是编译时用的头文件，
+# 运行时靠 LD_LIBRARY_PATH 指到同一份 libddsc —— 差一个版本就会在
+# `DataWriter.write()` 里 SIGSEGV（相机就是这么挂了半天）。
+if [ -d /opt/cyclonedds/lib ]; then
+    cat >> "$ENVFILE" <<'EOF2'
+CYCLONEDDS_HOME=/opt/cyclonedds
+LD_LIBRARY_PATH=/opt/cyclonedds/lib
+EOF2
+fi
 
 cat > "$UNIT" <<EOF
 [Unit]
