@@ -25,9 +25,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # 版本写死，别跟 stable 漂。CI 上跑的是 newer stable 时，Flutter 要求的
+      # AGP 最低版本会比本项目的高（9.1.0 vs 9.1.1），构建立刻失败；而且出包
+      # 的引擎版本和本地验证过的不一致，出问题分不清是谁的锅。
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.47.7'
           cache: true
 
       - name: Pub get
