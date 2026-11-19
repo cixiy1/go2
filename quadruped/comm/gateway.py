@@ -124,7 +124,11 @@ CONTROLLER_LABEL = {
 # 允许 App 直接转发的命令。`forward` / `turn` / `park` 故意不在里面：
 # 前两个是阻塞调用（几秒），会把状态轮询卡住；`park` 会关掉服务端，那是
 # 网关自己的事，不该由手机决定。
-ALLOWED = ("stand", "uncrouch", "crouch", "stop", "freeze", "jump", "gait", "move")
+ALLOWED = ("stand", "uncrouch", "crouch", "stop", "freeze", "jump", "gait", "move",
+           # 官方控制端的姿态/表演动作统一走这一条，具体名字由 server 的白名单
+           # `ACTS` 收口（见 `comm/server.py`）。这里不逐个列，否则每加一个动作
+           # 要改两处，漏一处就是「客户端点了没反应」。
+           "act")
 
 
 # 把浮点夹到区间里。NaN 也当越界处理 —— NaN 比较恒为 False，不显式判会漏过去。
@@ -384,7 +388,7 @@ class Gateway:
                 if self.driving:
                     try:
                         robot.call("move", vx=0.0, vy=0.0, vyaw=0.0, timeout=2.0)
-                    except (OSError, RobotError, TimeoutError, ConnectionError):
+                    except (OSError, RobotError, TimeoutError, socket.timeout, ConnectionError):
                         pass
                     self.driving = False
                     self._log("设定值过期，停车")
@@ -400,7 +404,7 @@ class Gateway:
                         last_sent = key
                         last_ts = time.monotonic()
                         self.driving = any(abs(v) > 1e-6 for v in key)
-                    except (OSError, RobotError, TimeoutError, ConnectionError) as err:
+                    except (OSError, RobotError, TimeoutError, socket.timeout, ConnectionError) as err:
                         self._log(f"下发速度失败：{err}")
                         self.driving = False
             tick += period
@@ -420,7 +424,7 @@ class Gateway:
             return
         try:
             robot.call("stop", timeout=3.0)
-        except (OSError, RobotError, TimeoutError, ConnectionError):
+        except (OSError, RobotError, TimeoutError, socket.timeout, ConnectionError):
             pass
 
     # -- 操作权 ----------------------------------------------------------
@@ -601,7 +605,7 @@ class Gateway:
         while not self.stopped.is_set():
             try:
                 data, _ = self._udp.recvfrom(65535)
-            except TimeoutError:
+            except (TimeoutError, socket.timeout):
                 continue
             except OSError:
                 return
@@ -715,7 +719,7 @@ class Gateway:
 
         try:
             out = self._dispatch(client, op, msg)
-        except (OSError, RobotError, TimeoutError, ConnectionError) as err:
+        except (OSError, RobotError, TimeoutError, socket.timeout, ConnectionError) as err:
             out = {"ok": False, "code": 503, "msg": f"{type(err).__name__}: {err}"}
         if rid is not None:
             client.send(dict({"op": "ack", "id": rid}, **out))
@@ -828,7 +832,7 @@ class Gateway:
             while not self.stopped.is_set() and not client.closed:
                 try:
                     got = client.conn.recv(timeout=0.5)
-                except TimeoutError:
+                except (TimeoutError, socket.timeout):
                     continue
                 except OSError:
                     break
@@ -884,13 +888,13 @@ class Gateway:
             while not self.stopped.is_set():
                 try:
                     sock, addr = listener.accept()
-                except TimeoutError:
+                except (TimeoutError, socket.timeout):
                     continue
                 except OSError:
                     break
                 try:
                     conn = ws.Conn.accept(sock)
-                except (ws.HandshakeError, OSError, TimeoutError) as err:
+                except (ws.HandshakeError, OSError, TimeoutError, socket.timeout) as err:
                     self._log(f"握手失败（{addr[0]}）：{err}")
                     try:
                         sock.close()

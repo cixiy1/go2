@@ -49,6 +49,24 @@ from quadruped.comm.protocol import (
 # ---- 命令执行 ----------------------------------------------------------------
 
 
+#: `act` 允许调用的官方动作（`SportClient` 的同名方法）。
+#:
+#: 全部是「腿还在下面撑着」的动作，做完还能接着遥控。刻意排除的：
+#:   FrontFlip / BackFlip / LeftFlip  空翻，落地姿态不可控
+#:   HandStand                        倒立，倒了很难自己起来
+#:   WalkUpright / CrossStep / StaticWalk  单腿或少腿支撑，对地面要求高
+#:   FreeJump / FreeBound / FreeAvoid  自由模式，参数不对会乱蹦
+#: 要玩这些请用官方 App —— 那边有场地和护具的前提假设。
+# `Hello`（api 1016）在 Go2 上实测返回 3104（DDS 超时，对端不响应）——
+# 那是 Go1 的动作。`Sit` / `RiseSit` 实测可用，其余待逐个验。
+ACTS = (
+    "Stretch", "Heart", "Content", "Pose", "Scrape",
+    "Sit", "RiseSit",
+    "StandUp", "StandDown", "BalanceStand", "RecoveryStand", "StopMove",
+)
+
+
+
 class CommandFailed(Exception):
     """命令在机器人那边没成功。code 用机器人原生返回码，或本层的 5xx。"""
 
@@ -281,6 +299,31 @@ class RobotService:
         self.close()
         self.stopped = True
         return {"bye": True}
+
+    # 官方控制端的姿态 / 表演动作，按名字转发到 `SportClient` 的同名方法。
+    #
+    # 为什么不在网关里逐个开 cmd：`SportClient` 有三十多个动作，一条一条往
+    # `ALLOWED` 里加会让那个元组变成一份手抄的 API 表，加一个漏一个。这里用
+    # 白名单收一次口，名字对不上就报错，比静默调错方法安全。
+    #
+    # 白名单只收「腿还站着」的动作。翻转、倒立、直立行走那几项在真机上摔了
+    # 就是摔了，不进这个入口 —— 要玩那些请用官方 App。
+    def _cmd_act(self, args):
+        name = str(args.get("name") or "")
+        if name not in ACTS:
+            raise CommandFailed(400, f"没有这个动作：{name!r}；可用：{'/'.join(sorted(ACTS))}")
+        fn = getattr(self.b, name, None)
+        if fn is None:
+            # `OfficialHighLevel` 是**组合**不是继承：动作方法在它内部的
+            # `SportClient` 上（`self.client`），外层只包了遥控用到的几个。
+            # 所以先看外层，没有就下沉一层；两个都没有才是真的不支持。
+            sport = getattr(self.b, "client", None)
+            fn = getattr(sport, name, None) if sport is not None else None
+        if fn is None:
+            raise NotImplementedError(
+                f"{getattr(self.b, 'kind', '当前')} 控制端没有 {name}，这个动作只对官方控制端有效")
+        self._check(fn(), name)
+        return {"act": name}
 
 
 # numpy 标量不是 JSON 原生类型，递归转成 float / list，否则编码器会抛 TypeError。

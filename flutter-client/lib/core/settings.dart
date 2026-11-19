@@ -66,7 +66,9 @@ class AppSettings extends ChangeNotifier {
   //! 网关所在机器的局域网地址（Mac 连 Yukiho 热点时拿到的）。
   //!
   //! 手机必须用这个；桌面用 127.0.0.1 就够，走回环少一层。
-  static const lanHost = '10.216.47.152';
+  // 网关跑在机器狗背上的扩展坞，这是它的无线地址。注意别写成 Mac 的
+  // 10.216.47.152 —— 那是客户端自己，连上去永远握手失败。
+  static const lanHost = '10.216.47.4';
 
   static String defaultHost() {
     if (kIsWeb) return 'localhost';

@@ -21,6 +21,8 @@ UTF-8，行尾 `\\n`。`id` 由调用方给、原样回传，只用于对日志�
     vyaw  ±0.80   和键盘遥控的上限一致
 """
 
+from __future__ import annotations
+
 import json
 
 import quadruped.limits as limits
@@ -92,6 +94,11 @@ COMMANDS: dict[str, dict[str, tuple]] = {
     },
 
     "jump": {},
+
+    # 官方控制端的姿态/表演动作，名字由 `server.ACTS` 白名单收口。
+    # 这里是字符串而不是枚举：动作表在 server 那边维护一份，协议层只做「有没有
+    # 这个字段」的校验，不重复抄一遍名字，否则加一个要改两处。
+    "act": {"name": (str, None, None, None)},
 
     # 不带 style 就是轮换到下一档；带 style 直接切（只有自研控制端支持指定）。
     # 默认写空串而不是 None：None 的语义是「必填」，这里要的是「可选」。
