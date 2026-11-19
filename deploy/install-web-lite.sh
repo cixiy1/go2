@@ -52,6 +52,14 @@ EOF
     echo "已写 $ENV_FILE"
 fi
 
+# 这两个值在生成 unit 时就展开，不留给 systemd 运行时替换。
+# 原因：`EnvironmentFile` 里缺 GO2_PORT 时，`${GO2_PORT}` 会传给 argparse 一个
+# 空串，app.py 报 `invalid int value: ''`，然后 Restart=always 每 3 秒重启一次
+# —— 扩展坞上就这么空转了 81 次。systemd 245 也不支持 `${VAR:-默认值}` 写法
+# （会原样传进去），所以默认值必须在这里给。
+WEB_IFACE="${GO2_IFACE:-eth10}"
+WEB_PORT="${GO2_WEB_PORT:-8080}"
+
 cat > "$UNIT" <<EOF
 [Unit]
 Description=Go2 网页控制面（轻量：总览/配网/蓝牙）
@@ -65,7 +73,7 @@ EnvironmentFile=-$ENV_FILE
 # 只用系统 python：这个服务不 import DDS，装不装 .venv 都能起。
 # token 从 GO2_WEB_TOKEN 读（app.py 的默认值就是它），所以这里不写 --token ——
 # 变量为空时命令行会多出一个空参数，argparse 会把它当成下一个选项的值。
-ExecStart=$PY -m quadruped.web.app --iface \${GO2_IFACE} --port \${GO2_PORT}
+ExecStart=$PY -m quadruped.web.app --iface $WEB_IFACE --port $WEB_PORT
 Restart=always
 RestartSec=3
 # 轻量版没有 VLA 子进程要收尾（蹲下/阻尼/交还 mcf 是完整版的事）。
