@@ -4,6 +4,7 @@ import '../app_state.dart';
 import '../core/models.dart';
 import '../theme.dart';
 import 'widgets/panel.dart';
+import 'widgets/update_panel.dart';
 
 // 设置页：连接参数的「只看」、手感、画面开关、收工与断开。
 //
@@ -30,6 +31,8 @@ class SettingsPage extends StatelessWidget {
               _camera(app),
               const SizedBox(height: 12),
               _danger(app),
+              const SizedBox(height: 12),
+              const UpdatePanel(),
               const SizedBox(height: 12),
               _about(),
             ],
@@ -87,7 +90,7 @@ class SettingsPage extends StatelessWidget {
                       child: Padding(
                         padding: const EdgeInsets.only(right: 6),
                         child: InkWell(
-                          borderRadius: BorderRadius.circular(9),
+                          borderRadius: BorderRadius.circular(R.ctl),
                           onTap: () {
                             s.speedScale = v;
                             s.save();
@@ -99,7 +102,7 @@ class SettingsPage extends StatelessWidget {
                               color: (s.speedScale - v).abs() < 1e-6
                                   ? C.accent.withValues(alpha: 0.16)
                                   : C.surfaceHi,
-                              borderRadius: BorderRadius.circular(9),
+                              borderRadius: BorderRadius.circular(R.ctl),
                               border: Border.all(
                                 color: (s.speedScale - v).abs() < 1e-6
                                     ? C.accent.withValues(alpha: 0.5)
@@ -163,6 +166,22 @@ class SettingsPage extends StatelessWidget {
               app.settings.cameraOn = v;
               app.settings.save();
               app.client.camera(v);
+            },
+          ),
+          const Divider(height: 18, color: C.line),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            activeThumbColor: C.accent,
+            title: const Text('毛玻璃', style: TextStyle(fontSize: 12.5)),
+            subtitle: const Text(
+              '侧栏、顶栏、手机底栏用背景模糊（对齐 FlClash）。卡的话关掉',
+              style: TextStyle(fontSize: 11, color: C.faint),
+            ),
+            value: app.settings.glass,
+            onChanged: (v) {
+              app.settings.glass = v;
+              app.settings.save();
             },
           ),
         ],

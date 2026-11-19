@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: ^3.13.5
@@ -34,6 +34,12 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+  # 应用内更新：拉 GitHub Releases、下载 APK、唤起系统安装器。
+  http: ^1.2.0
+  package_info_plus: ^8.0.0
+  path_provider: ^2.1.6
+  open_filex: ^5.0.0
+  url_launcher: ^6.3.0
   gamepads: ^0.1.15
   web_socket_channel: ^3.0.3
   shared_preferences: ^2.5.6
@@ -59,6 +65,19 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # 内嵌中文字体。Flutter Web 的中文是从 fonts.gstatic.com 现拉的，首屏那几秒
+  # 全是方块（实测 8 秒还没到）。这里按项目实际用字裁了子集（909 字，三个
+  # 字重共 654 KB），首帧就有中文。原生端本来有系统字体，也一并用它，视觉一致。
+  fonts:
+    - family: NotoSansSC
+      fonts:
+        - asset: assets/fonts/NotoSansSC-400.ttf
+          weight: 400
+        - asset: assets/fonts/NotoSansSC-600.ttf
+          weight: 600
+        - asset: assets/fonts/NotoSansSC-700.ttf
+          weight: 700
 
   # To add assets to your application, add an assets section, like this:
   # assets:

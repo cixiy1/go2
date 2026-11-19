@@ -46,3 +46,9 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+android/key.properties
+android/release.jks
+
+# 测试截图产物与 Gradle 中间目录
+test/failures/
+android/build/
