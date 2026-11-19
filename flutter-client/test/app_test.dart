@@ -1,7 +1,11 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go2_remote/core/models.dart';
+import 'package:go2_remote/input/intent.dart';
 import 'package:go2_remote/core/settings.dart';
+import 'package:go2_remote/ui/widgets/glass.dart';
 import 'package:go2_remote/ui/widgets/joystick.dart';
 
 // 客户端最容易被悄悄改坏的两块：网关报文的解析、摇杆到意图的那一步符号。
@@ -52,10 +56,71 @@ void main() {
       expect(f.alert, isTrue);
     });
 
+    test('链路信息带上控制端与可选列表', () {
+      final st = GatewayState.fromJson({
+        'mode': 'manual',
+        'link': {
+          'ok': true,
+          'controller': 'ours',
+          'available': ['ours', 'policy'],
+        },
+      });
+      expect(st.link.controller, 'ours');
+      expect(st.link.available, ['ours', 'policy']);
+    });
+
+    test('老版本服务端没报控制端时不炸', () {
+      final st = GatewayState.fromJson({'mode': 'manual', 'link': {'ok': true}});
+      expect(st.link.controller, isNull);
+      expect(st.link.available, isEmpty);
+    });
+
     test('清空 VLA 后的空帧 hasData 为 false', () {
       final f = VlaFrame.fromJson({});
       expect(f.hasData, isFalse);
       expect(f.sectors, isEmpty);
+    });
+  });
+
+  group('JPEG 宽高', () {
+    test('从 SOF0 段读出 320x240', () {
+      // FFD8 + APP0(空) + SOF0(h=240,w=320)
+      final bytes = <int>[
+        0xFF, 0xD8,
+        0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00,
+        0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0xF0, 0x01, 0x40, 0x03,
+        0x00, 0x00, 0x00, 0x00,
+      ];
+      final size = jpegSize(Uint8List.fromList(bytes));
+      expect(size, isNotNull);
+      expect(size!.$1, 320);
+      expect(size.$2, 240);
+      expect(jpegSize(Uint8List.fromList([0, 1, 2])), isNull);
+    });
+
+    test('CameraFrame 带上比例，首字节被剥掉', () {
+      final raw = Uint8List.fromList(<int>[
+        2,
+        0xFF, 0xD8,
+        0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0xF0, 0x01, 0x40, 0x03,
+      ]);
+      final f = CameraFrame.parse(raw);
+      expect(f.isCamera, isTrue);
+      expect(f.aspect, closeTo(320 / 240, 1e-9));
+      expect(f.bytes[0], 0xFF);
+    });
+
+    test('帧数据是独立副本，不是原始消息的视图', () {
+      // Web 上 CanvasKit 走 blob URL 解码时按整个 buffer 取数据；如果这里
+      // 返回 sublistView，JPEG 头前面会多出那个来源字节，直接解码失败。
+      // 所以断言：offset 必须为 0、长度正好少一个字节。
+      final raw = Uint8List.fromList(<int>[
+        2, 0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0xF0, 0x01, 0x40,
+      ]);
+      final f = CameraFrame.parse(raw);
+      expect(f.bytes.offsetInBytes, 0);
+      expect(f.bytes.lengthInBytes, raw.length - 1);
+      expect(f.bytes.buffer.lengthInBytes, raw.length - 1);
     });
   });
 
@@ -80,7 +145,51 @@ void main() {
     });
   });
 
+  group('玻璃层', () {
+    // 关掉毛玻璃要退化成纯填充，不能连内容一起没掉 —— 设置里那个开关
+    // 是给低端设备留的，不能变成「一关就白屏」。
+    testWidgets('关掉时仍然渲染内容', (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Center(
+          child: SizedBox(
+            width: 200,
+            height: 80,
+            child: Glass(
+              enabled: false,
+              child: const Text('面板'),
+            ),
+          ),
+        ),
+      ));
+      expect(find.text('面板'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('开着时也不抛异常', (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Center(
+          child: SizedBox(
+            width: 200,
+            height: 80,
+            child: Glass(child: const Text('面板2')),
+          ),
+        ),
+      ));
+      expect(find.text('面板2'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   group('摇杆', () {
+    // 右摇杆改全向后，纵向和左手那路都会给 vx。取大而不是相加：
+    // 相加会到 2.0 超出行程，取小则让推得更狠的那只手失效。
+    test('同一根轴两路取绝对值大的', () {
+      expect(pickAxis(0.8, 0.3), 0.8);
+      expect(pickAxis(0.3, -0.8), -0.8);
+      expect(pickAxis(0.0, 0.0), 0.0);
+      expect(pickAxis(-0.4, 0.4), -0.4); // 相等时保留前一路，行为确定
+    });
+
     testWidgets('拖动产生 -1~1 的偏移，松手归零', (tester) async {
       final values = <Offset>[];
       await tester.pumpWidget(MaterialApp(
