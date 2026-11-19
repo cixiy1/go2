@@ -199,6 +199,7 @@ DDS_ENTRY = {
     "quadruped/control/high_level/official.py",  # 官方 SportClient
     "quadruped/motion/direct.py",             # 推理控制器的 low 层直连
     "quadruped/percept/feed.py",              # 相机馈送（只读，不写 lowcmd）
+    "quadruped/percept/radar_feed.py",        # 雷达馈送（独立进程，只订阅点云）
 }
 
 # 规则 6 的白名单：进程所有者。

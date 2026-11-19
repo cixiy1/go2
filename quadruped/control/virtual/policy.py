@@ -34,6 +34,12 @@ from quadruped.policy import gaits
 from quadruped.policy.walker import (COMMAND_RANGE, DEFAULT_Q, KD, KP,
                                      POLICY_TO_SDK, tilt_rad)
 
+#: 真机接管前，关节角与策略站姿允许的最大偏差（rad）。
+#:
+#: 站着时是 0.2 量级，趴着时小腿差到 1.2（`motion/rise.py` 顶部实测 1.31 → −1.5）。
+#: 超过了就说明狗没站起来，`_rise()` 的 kp 80 会把腿顶到 23.7 N·m 限幅。
+MAX_STAND_GAP = 0.8
+
 
 class PolicyBackend:
     """推理控制器作为「控制端」。
@@ -49,11 +55,24 @@ class PolicyBackend:
     # kp / kd 走 `MotionService`，与另外两个后端同名，启动器把同一组参数发给所有
     # 控制器时不会 TypeError。tau 是自研控制端的前馈系数，策略这一层没有对应项，
     # 收下但不使用。
-    def __init__(self, endpoint, *, torque: str = "net", action_limit: float = 10.0,
+    def __init__(self, endpoint, *, torque: str = "pd", action_limit: float = 10.0,
                  vx_max: float | None = None, kp: float | None = None,
                  kd: float | None = None,
                  tau: float | None = None, warmup: float = 1.5, verbose: bool = True):
         del tau
+        # 回环口就是仿真。先算出来，下面要拿它决定 `torque="net"` 能不能用。
+        self.simulated = endpoint.iface == "lo0"
+        # `torque="net"` 下发给电机的 kp / kd 都是 0，力矩完全由 actuator_net 开环
+        # 决定：没有位置刚度、没有阻尼，关节转多快都没东西拦。仿真里这么跑是
+        # 为了贴近训练侧的 actuator 模型；真机上没有任何安全网 —— 2026-11-19
+        # 在扩展坞上一点「推理控制器」，四条腿就满力矩甩起来打到人。
+        # 所以要开这条路必须显式传 `--torque net`，且只能在仿真里。
+        if torque == "net" and not self.simulated:
+            raise ValueError(
+                "真机上不能用 torque='net'：下发 kp=kd=0，力矩只由 actuator_net "
+                "开环给出，没有任何刚度与阻尼。要力矩模型请在仿真里跑；"
+                "真机走默认的 pd（kp 20 / kd 0.5）。"
+            )
         self.link = DirectLink(domain=endpoint.domain, iface=endpoint.iface,
                                verbose=verbose)
         if not self.link.connect():
@@ -70,9 +89,8 @@ class PolicyBackend:
         # 而策略是照 ±1.0 训的，那个 0.4 只是某个档位声明的巡航值，不是能力边界。
         # 要保守就由调用方显式传（键盘遥控传的是自己的 `--max-speed`）。
         self.vx_max = float(COMMAND_RANGE["vx"][1] if vx_max is None else vx_max)
-        # 回环口就是仿真。它和真机在收工时的处理不一样：仿真桥没有 lowcmd
-        # 超时，停发后保持最后姿态；真机没人发就失力。
-        self.simulated = endpoint.iface == "lo0"
+        # `self.simulated` 在构造开头就定了。它决定收工时走哪条：仿真桥没有
+        # lowcmd 超时，停发后保持最后姿态；真机没人发就失力。
         # 接管后原地跑多久再接受速度。时钟从 0 起步，四腿相位要一两个周期才展开；
         # 演示脚本的「站 3 秒再走」就是这一段，键盘原来没有，接管 1 秒就加速，实测翻。
         self.warmup = float(warmup)
@@ -97,6 +115,27 @@ class PolicyBackend:
                 f"机器人当前倾角 {math.degrees(tilt):.0f}°，已经侧翻，接管会把它硬掰。"
                 "仿真里重启一次：pkill -f unitree_mujoco.py，再跑 "
                 "./quadruped/sim/run_sim.sh；真机先走运控的 stand")
+        # 倾角挡得住侧翻，挡不住趴姿 —— 狗趴在地上时机身是水平的，tilt ≈ 0，上面
+        # 那道闸照样放行。而 `_rise()` 是 1.5 s 内用 kp 80 把腿拉到 `DEFAULT_Q`：
+        # 趴姿下大腿差 0.5 rad、小腿差 1.2 rad（`motion/rise.py` 顶部实测
+        # 1.31 / −2.73 → 0.8 / −1.5），力矩直接撞 23.7 N·m 限幅，四条腿一起把脚
+        # 往地里顶。2026-11-19 在扩展坞上就是这么把腿甩起来打到人的：第一次接管
+        # 倒下，第二次狗还躺着就又被点了「推理控制器」。
+        #
+        # 所以真机上再比一次关节角。站着的时候与站姿的差在 0.2 rad 量级，趴着是
+        # 1.2 rad，闸值取中间。仿真不拦：MuJoCo 的初始姿态本来就离站姿不远，而
+        # `policy_demo` 要先从那里起步。
+        if not self.simulated:
+            q0 = self.link.q
+            if q0 is None:
+                raise RuntimeError("拿不到关节角，无法确认机器狗是否已经站起来")
+            gap = float(np.abs(np.asarray(q0, float)
+                               - DEFAULT_Q[POLICY_TO_SDK]).max())
+            if gap > MAX_STAND_GAP:
+                raise RuntimeError(
+                    f"关节离策略站姿还差 {gap:.2f} rad（上限 {MAX_STAND_GAP}），"
+                    "看着是没站起来。先用官方控制端站起来（stand）再切推理控制器 —— "
+                    "从这个姿态硬拉会把腿顶到力矩限幅。")
         self._rise()
         self.svc.start()
         # 速度命令还是 0，策略按默认命令原地踏步：让步态进入节律、姿态稳住。

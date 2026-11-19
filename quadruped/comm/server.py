@@ -21,6 +21,8 @@
 关闭空闲停车用 `--idle-stop 0`，但只在调试时这么做。
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import signal
@@ -328,7 +330,7 @@ def session(conn: socket.socket, svc: RobotService) -> None:
     while not svc.stopped:
         try:
             chunk = conn.recv(65536)
-        except TimeoutError:
+        except (TimeoutError, socket.timeout):
             continue
         except OSError:
             return
@@ -419,6 +421,17 @@ def main(argv=None) -> int:
     if backend.kind == "policy":
         try:
             backend.start()
+            # `start()` 里最后那段是 1.5 s 热身，motion 线程在这期间已经在发指令，
+            # 可能因为倾角超限自己停掉（`service.py` 的 FALL_RAD 那道闸）。它停了
+            # 而这里还报「已接管」，等于把「狗倒了」当成「切换成功」交给上层：
+            # 2026-11-19 真机上 motion 15:31:16 已停，15:31:17 照样打印了
+            # 「站姿 + 热身完成」。所以先确认线程还活着。
+            if not backend.svc.running:
+                raise RuntimeError(
+                    "策略线程已停（"
+                    + (backend.svc.last_error or "倾角超限，自动停")
+                    + "），接管没有成功"
+                )
             print("推理控制端已接管（站姿 + 热身完成）", flush=True)
         except Exception as err:                           # noqa: BLE001
             print(f"推理控制端接管失败：{err}", file=sys.stderr)
@@ -432,7 +445,7 @@ def main(argv=None) -> int:
         while not svc.stopped:
             try:
                 conn, _ = listener.accept()
-            except TimeoutError:
+            except (TimeoutError, socket.timeout):
                 continue
             except OSError:
                 break
